@@ -798,6 +798,62 @@ client.on(Events.VoiceStateUpdate, (oldS, newS) => {
 client.on(Events.GuildRoleCreate, (role) => sendLog(role.guild, LOG.role, new EmbedBuilder().setColor(0x0a9d6c).setTitle('➕ Role Created').setTimestamp().setDescription(`<@&${role.id}> · \`${role.name}\``).setFooter({ text: `Role ID: ${role.id}` })));
 client.on(Events.GuildRoleDelete, (role) => sendLog(role.guild, LOG.role, new EmbedBuilder().setColor(0xe5484d).setTitle('➖ Role Deleted').setTimestamp().setDescription(`\`${role.name}\``).setFooter({ text: `Role ID: ${role.id}` })));
 
+// ---- automod ----
+const AUTOMOD = process.env.AUTOMOD !== 'off'; // on by default; set AUTOMOD=off to disable
+const LINK_RE = /(https?:\/\/|www\.|discord(?:app)?\.com\/invite\/|discord\.gg\/|dsc\.gg\/|\b[a-z0-9-]+\.[a-z]{2,}\/\S+)/i;
+// Severe slurs blocked by default; add your own (comma-separated) via the BADWORDS env var.
+const DEFAULT_BADWORDS = ['nigger', 'nigga', 'faggot', 'fag', 'kike', 'spic', 'chink', 'tranny', 'retard'];
+const BADWORDS = [...DEFAULT_BADWORDS, ...((process.env.BADWORDS || '').split(',').map((w) => w.trim().toLowerCase()).filter(Boolean))];
+function leet(s) {
+  return (s || '').toLowerCase()
+    .replace(/0/g, 'o').replace(/[1!|]/g, 'i').replace(/3/g, 'e').replace(/[4@]/g, 'a').replace(/[5$]/g, 's').replace(/7/g, 't');
+}
+const BAD_RES = BADWORDS.map((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
+function hasBadWord(text) { const t = leet(text); return BAD_RES.some((re) => re.test(t)); }
+function isStaffMember(member) { return !!(member && member.permissions && member.permissions.has(PermissionFlagsBits.ManageMessages)); }
+const imgSpam = new Map(); // userId -> [{ at, msg }]
+
+function automodLog(msg, reason, color) {
+  modLog(msg.guild, color, '🤖 Automod', msg.author, client.user, reason, { name: 'Channel', value: `<#${msg.channelId}>`, inline: true });
+}
+function automodNotice(msg, text) {
+  msg.channel.send({ content: `<@${msg.author.id}> ${text}` })
+    .then((m) => setTimeout(() => m.delete().catch(() => {}), 6000)).catch(() => {});
+}
+
+client.on(Events.MessageCreate, async (msg) => {
+  if (!AUTOMOD || !msg.guild || msg.author.bot || !msg.member) return;
+  if (isStaffMember(msg.member)) return; // staff are exempt from automod
+
+  // 1) severe slurs / inappropriate language
+  if (BAD_RES.length && hasBadWord(msg.content)) {
+    await msg.delete().catch(() => {});
+    automodLog(msg, 'Inappropriate language', 0xe5484d);
+    automodNotice(msg, 'that language isn’t allowed here.');
+    return;
+  }
+  // 2) links — members can't post them, only staff
+  if (LINK_RE.test(msg.content)) {
+    await msg.delete().catch(() => {});
+    automodLog(msg, 'Posted a link (links are staff-only)', 0xe5484d);
+    automodNotice(msg, 'links are staff-only here.');
+    return;
+  }
+  // 3) image spam from a NEW account (classic raid-bot pattern)
+  const hasImage = msg.attachments.some((a) => (a.contentType && a.contentType.startsWith('image/')) || /\.(png|jpe?g|gif|webp)$/i.test(a.name || ''));
+  if (hasImage && (Date.now() - msg.author.createdTimestamp) < 14 * 86400000) {
+    const arr = (imgSpam.get(msg.author.id) || []).filter((e) => Date.now() - e.at < 20000);
+    arr.push({ at: Date.now(), msg });
+    imgSpam.set(msg.author.id, arr);
+    if (arr.length >= 4) {
+      imgSpam.delete(msg.author.id);
+      for (const e of arr) e.msg.delete().catch(() => {});
+      try { await msg.member.timeout(60 * 60 * 1000, 'Automod: image spam from a new account'); } catch (e) {}
+      automodLog(msg, '4+ images from a <14-day-old account — deleted + 1h timeout', 0xb06d00);
+    }
+  }
+});
+
 // ---- live "now playing" card ----
 // Maintains ONE auto-updating embed in the #now-playing channel (found by name).
 const npMessages = new Map(); // guildId -> Message
