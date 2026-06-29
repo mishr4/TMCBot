@@ -26,8 +26,8 @@ const { spawn } = require('node:child_process');
 
 // ---- config (from environment) ----
 const TOKEN = process.env.DISCORD_TOKEN;
-const STREAM_URL = process.env.AZURACAST_STREAM_URL;            // e.g. https://cast.tmc.gg/listen/your_station/radio.mp3
-const NOWPLAYING_URL = process.env.AZURACAST_NOWPLAYING_URL || ''; // e.g. https://cast.tmc.gg/api/nowplaying/your_station
+const STREAM_URL = process.env.TMCAST_STREAM_URL || process.env.AZURACAST_STREAM_URL;            // e.g. https://cast.tmc.gg/listen/one/radio.mp3
+const NOWPLAYING_URL = process.env.TMCAST_NOWPLAYING_URL || process.env.AZURACAST_NOWPLAYING_URL || ''; // e.g. https://cast.tmc.gg/api/np/one
 const STATION_NAME = process.env.STATION_NAME || 'the radio';
 const GUILD_ID = process.env.GUILD_ID || '';                   // optional: instant slash-command registration
 const AUTOPLAY_CHANNEL_ID = process.env.AUTOPLAY_CHANNEL_ID || ''; // optional: auto-join + play on startup
@@ -109,6 +109,7 @@ async function connectAndPlay(channel) {
     selfMute: false
   });
   connections.set(channel.guild.id, connection);
+  connection.on('stateChange', (o, n) => console.log(`Voice connection: ${o.status} -> ${n.status}`));
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
     try {
@@ -128,10 +129,10 @@ async function connectAndPlay(channel) {
 
   connection.subscribe(player);
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
   } catch {
     try { connection.destroy(); } catch {}
-    throw new Error('Could not connect to the voice channel in time. Check my Connect/Speak permissions.');
+    throw new Error('Couldn’t establish the voice connection in time — please try again in a moment.');
   }
 
   if (player.state.status !== AudioPlayerStatus.Playing) startStream();
@@ -199,20 +200,28 @@ async function cmdNowPlaying(interaction) {
   const res = await fetch(NOWPLAYING_URL, { headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error('Could not reach the radio API.');
   let data = await res.json();
-  if (Array.isArray(data)) data = data[0] || {}; // some AzuraCast endpoints return an array of stations
+  if (Array.isArray(data)) data = data[0] || {}; // /api/nowplaying returns an array of stations
 
-  const np = (data.now_playing && data.now_playing.song) || {};
+  // Tolerate both TMCast (flat now_playing, numeric listeners, top-level is_live)
+  // and standard AzuraCast (now_playing.song, listeners.current, live.is_live).
+  const npRaw = data.now_playing || {};
+  const song = npRaw.song || npRaw;
+  const title = song.title || 'Unknown track';
+  const artist = song.artist || '';
+  const art = song.artwork_url || song.art || (data.station && data.station.logo_url) || null;
   const station = (data.station && data.station.name) || STATION_NAME;
-  const listeners = data.listeners && (data.listeners.current ?? data.listeners.total);
-  const isLive = data.live && data.live.is_live;
-  const streamer = data.live && data.live.streamer_name;
+  const listeners = typeof data.listeners === 'number'
+    ? data.listeners
+    : (data.listeners && (data.listeners.current ?? data.listeners.total));
+  const isLive = data.is_live ?? (data.live && data.live.is_live) ?? false;
+  const streamer = (data.live && data.live.streamer_name) || data.streamer_name;
 
   const embed = new EmbedBuilder()
     .setColor(ACCENT)
     .setAuthor({ name: isLive ? `🔴 Live on ${station}` : `🎵 Now playing on ${station}` })
-    .setTitle(np.title || 'Unknown track')
-    .setDescription(np.artist || '​');
-  if (np.art) embed.setThumbnail(np.art);
+    .setTitle(title)
+    .setDescription(artist || '​');
+  if (art) embed.setThumbnail(art);
   const footer = [];
   if (isLive && streamer) footer.push(`DJ: ${streamer}`);
   if (listeners != null) footer.push(`${listeners} listening`);
