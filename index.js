@@ -327,12 +327,21 @@ async function sendLog(guild, name, embed) {
   if (!ch) return; // channel doesn't exist -> silently skip
   try { await ch.send({ embeds: [embed] }); } catch (e) {}
 }
+const cut = (s, n = 1024) => (s && s.length > n ? s.slice(0, n - 1) + '…' : (s || ''));
+const rel = (ts) => (ts ? `<t:${Math.floor(ts / 1000)}:R>` : '—');
+const full = (ts) => (ts ? `<t:${Math.floor(ts / 1000)}:F>` : '—');
+
+// Base embed: avatar header + thumbnail (card look), copyable User ID in the footer.
 function logEmbed(color, title, user) {
   const e = new EmbedBuilder().setColor(color).setTitle(title).setTimestamp();
-  if (user) e.setAuthor({ name: user.tag || user.username || 'Unknown', iconURL: user.displayAvatarURL && user.displayAvatarURL() });
+  if (user) {
+    const av = user.displayAvatarURL ? user.displayAvatarURL() : null;
+    e.setAuthor({ name: user.tag || user.username || 'Unknown', iconURL: av || undefined });
+    if (av) e.setThumbnail(av);
+    if (user.id) e.setFooter({ text: `User ID: ${user.id}` });
+  }
   return e;
 }
-const cut = (s, n = 1024) => (s && s.length > n ? s.slice(0, n - 1) + '…' : (s || ''));
 async function findExecutor(guild, type, targetId) {
   try {
     const logs = await guild.fetchAuditLogs({ type, limit: 5 });
@@ -343,69 +352,75 @@ async function findExecutor(guild, type, targetId) {
 // messages -> msg-logs
 client.on(Events.MessageDelete, (msg) => {
   if (!msg.guild || msg.author?.bot) return;
-  sendLog(msg.guild, LOG.msg, logEmbed(0xe5484d, '🗑️ Message deleted', msg.author)
-    .setDescription(cut(msg.content) || '*(content not cached)*')
-    .addFields({ name: 'Channel', value: `<#${msg.channelId}>`, inline: true }));
+  const e = logEmbed(0xe5484d, '🗑️ Message Deleted', msg.author)
+    .setDescription(cut(msg.content) || '*No text (embed, sticker, or not cached).*')
+    .addFields(
+      { name: 'Author', value: msg.author ? `<@${msg.author.id}>` : 'Unknown', inline: true },
+      { name: 'Channel', value: `<#${msg.channelId}>`, inline: true },
+      { name: 'Sent', value: rel(msg.createdTimestamp), inline: true }
+    )
+    .setFooter({ text: `Author: ${msg.author?.id || '?'} • Message: ${msg.id}` });
+  sendLog(msg.guild, LOG.msg, e);
 });
 client.on(Events.MessageUpdate, (oldMsg, newMsg) => {
   if (!newMsg.guild || newMsg.author?.bot) return;
   if ((oldMsg.content || '') === (newMsg.content || '')) return;
-  const e = logEmbed(0xf5a623, '✏️ Message edited', newMsg.author).addFields(
+  const e = logEmbed(0xf5a623, '✏️ Message Edited', newMsg.author).addFields(
     { name: 'Before', value: cut(oldMsg.content) || '*(not cached)*' },
     { name: 'After', value: cut(newMsg.content) || '*(empty)*' },
     { name: 'Channel', value: `<#${newMsg.channelId}>`, inline: true }
-  );
+  ).setFooter({ text: `Author: ${newMsg.author?.id || '?'} • Message: ${newMsg.id}` });
   if (newMsg.url) e.setURL(newMsg.url);
   sendLog(newMsg.guild, LOG.msg, e);
 });
 client.on(Events.MessageBulkDelete, (messages) => {
   const first = messages.first();
   if (!first?.guild) return;
-  sendLog(first.guild, LOG.msg, logEmbed(0xe5484d, '🧹 Messages purged')
-    .setDescription(`**${messages.size}** messages deleted in <#${first.channelId}>`));
+  sendLog(first.guild, LOG.msg, new EmbedBuilder().setColor(0xe5484d).setTitle('🧹 Messages Purged').setTimestamp()
+    .setDescription(`**${messages.size}** messages were bulk-deleted in <#${first.channelId}>.`));
 });
 
-// joins / leaves / kicks -> user-logs (kick -> mod-logs)
+// joins / leaves / kicks
 client.on(Events.GuildMemberAdd, (m) => {
-  sendLog(m.guild, LOG.user, logEmbed(0x0a9d6c, '📥 Member joined', m.user)
-    .setDescription(`<@${m.id}>`)
-    .addFields(
-      { name: 'Account created', value: `<t:${Math.floor(m.user.createdTimestamp / 1000)}:R>`, inline: true },
-      { name: 'Member #', value: `${m.guild.memberCount}`, inline: true }
-    ));
+  sendLog(m.guild, LOG.user, logEmbed(0x0a9d6c, '📥 Member Joined', m.user)
+    .setDescription(`<@${m.id}> joined — member **#${m.guild.memberCount}**.`)
+    .addFields({ name: 'Account Created', value: `${full(m.user.createdTimestamp)} (${rel(m.user.createdTimestamp)})` }));
 });
 client.on(Events.GuildMemberRemove, async (m) => {
   const kick = await findExecutor(m.guild, AuditLogEvent.MemberKick, m.id);
   if (kick) {
-    sendLog(m.guild, LOG.mod, logEmbed(0xe5484d, '👢 Member kicked', m.user)
+    sendLog(m.guild, LOG.mod, logEmbed(0xe5484d, '👢 Member Kicked', m.user)
       .setDescription(`<@${m.id}>`)
       .addFields(
-        { name: 'Moderator', value: kick.executor?.tag || 'Unknown', inline: true },
+        { name: 'Moderator', value: kick.executor ? `<@${kick.executor.id}>` : 'Unknown', inline: true },
         { name: 'Reason', value: kick.reason || 'No reason given', inline: true }
       ));
   } else {
     const roles = m.roles?.cache?.filter((r) => r.id !== m.guild.id).map((r) => `<@&${r.id}>`).join(' ');
-    sendLog(m.guild, LOG.user, logEmbed(0x99662b, '📤 Member left', m.user)
-      .setDescription(`<@${m.id}>`)
-      .addFields({ name: 'Roles', value: cut(roles) || '—' }));
+    sendLog(m.guild, LOG.user, logEmbed(0x99662b, '📤 Member Left', m.user)
+      .setDescription(`<@${m.id}> left the server.`)
+      .addFields(
+        { name: 'Joined', value: rel(m.joinedTimestamp), inline: true },
+        { name: 'Roles', value: cut(roles) || '—' }
+      ));
   }
 });
 
 // bans -> mod-logs
 client.on(Events.GuildBanAdd, async (ban) => {
   const entry = await findExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
-  sendLog(ban.guild, LOG.mod, logEmbed(0x8b0000, '🔨 Member banned', ban.user)
+  sendLog(ban.guild, LOG.mod, logEmbed(0x8b0000, '🔨 Member Banned', ban.user)
     .setDescription(`<@${ban.user.id}>`)
     .addFields(
-      { name: 'Moderator', value: entry?.executor?.tag || 'Unknown', inline: true },
+      { name: 'Moderator', value: entry?.executor ? `<@${entry.executor.id}>` : 'Unknown', inline: true },
       { name: 'Reason', value: entry?.reason || ban.reason || 'No reason given', inline: true }
     ));
 });
 client.on(Events.GuildBanRemove, async (ban) => {
   const entry = await findExecutor(ban.guild, AuditLogEvent.MemberBanRemove, ban.user.id);
-  sendLog(ban.guild, LOG.mod, logEmbed(0x0a9d6c, '♻️ Member unbanned', ban.user)
+  sendLog(ban.guild, LOG.mod, logEmbed(0x0a9d6c, '♻️ Member Unbanned', ban.user)
     .setDescription(`<@${ban.user.id}>`)
-    .addFields({ name: 'Moderator', value: entry?.executor?.tag || 'Unknown', inline: true }));
+    .addFields({ name: 'Moderator', value: entry?.executor ? `<@${entry.executor.id}>` : 'Unknown', inline: true }));
 });
 
 // roles, nickname, timeout -> role-logs / user-logs / mod-logs
@@ -414,13 +429,14 @@ client.on(Events.GuildMemberUpdate, (oldM, newM) => {
   const added = after.filter((r) => !before.has(r.id));
   const removed = before.filter((r) => !after.has(r.id));
   if (added.size || removed.size) {
-    const e = logEmbed(0x5865f2, '🎭 Roles updated', newM.user).setDescription(`<@${newM.id}>`);
-    if (added.size) e.addFields({ name: 'Added', value: cut(added.map((r) => `<@&${r.id}>`).join(' ')) });
-    if (removed.size) e.addFields({ name: 'Removed', value: cut(removed.map((r) => `<@&${r.id}>`).join(' ')) });
+    const color = added.size && !removed.size ? 0x0a9d6c : (removed.size && !added.size ? 0xe5484d : 0x5865f2);
+    const e = logEmbed(color, '🎭 Roles Updated', newM.user).setDescription(`<@${newM.id}>`);
+    if (added.size) e.addFields({ name: `✅ Added (${added.size})`, value: cut(added.map((r) => `<@&${r.id}>`).join(' ')) });
+    if (removed.size) e.addFields({ name: `❌ Removed (${removed.size})`, value: cut(removed.map((r) => `<@&${r.id}>`).join(' ')) });
     sendLog(newM.guild, LOG.role, e);
   }
   if ((oldM.nickname || '') !== (newM.nickname || '')) {
-    sendLog(newM.guild, LOG.user, logEmbed(0x5865f2, '🏷️ Nickname changed', newM.user).addFields(
+    sendLog(newM.guild, LOG.user, logEmbed(0x5865f2, '🏷️ Nickname Changed', newM.user).addFields(
       { name: 'Before', value: oldM.nickname || '*(none)*', inline: true },
       { name: 'After', value: newM.nickname || '*(none)*', inline: true }
     ));
@@ -429,29 +445,42 @@ client.on(Events.GuildMemberUpdate, (oldM, newM) => {
   const newTo = newM.communicationDisabledUntilTimestamp || 0;
   if (oldTo !== newTo) {
     if (newTo > Date.now()) {
-      sendLog(newM.guild, LOG.mod, logEmbed(0xb06d00, '⏳ Member timed out', newM.user)
-        .setDescription(`<@${newM.id}> until <t:${Math.floor(newTo / 1000)}:f>`));
+      sendLog(newM.guild, LOG.mod, logEmbed(0xb06d00, '⏳ Member Timed Out', newM.user)
+        .setDescription(`<@${newM.id}>`)
+        .addFields({ name: 'Until', value: `${full(newTo)} (${rel(newTo)})` }));
     } else {
-      sendLog(newM.guild, LOG.mod, logEmbed(0x0a9d6c, '⏳ Timeout removed', newM.user).setDescription(`<@${newM.id}>`));
+      sendLog(newM.guild, LOG.mod, logEmbed(0x0a9d6c, '⏳ Timeout Removed', newM.user).setDescription(`<@${newM.id}>`));
     }
   }
 });
 
-// voice activity -> vc-logs
+// voice activity -> vc-logs (with live channel headcount)
 client.on(Events.VoiceStateUpdate, (oldS, newS) => {
   const member = newS.member || oldS.member;
   if (!member || member.user.bot) return;
   let e;
-  if (!oldS.channelId && newS.channelId) e = logEmbed(0x0a9d6c, '🔊 Joined voice', member.user).setDescription(`<@${member.id}> → <#${newS.channelId}>`);
-  else if (oldS.channelId && !newS.channelId) e = logEmbed(0xe5484d, '🔇 Left voice', member.user).setDescription(`<@${member.id}> left <#${oldS.channelId}>`);
-  else if (oldS.channelId !== newS.channelId) e = logEmbed(0x5865f2, '🔀 Moved voice', member.user).setDescription(`<@${member.id}>: <#${oldS.channelId}> → <#${newS.channelId}>`);
-  else return;
+  if (!oldS.channelId && newS.channelId) {
+    e = logEmbed(0x0a9d6c, '🔊 Joined Voice', member.user).addFields(
+      { name: 'Channel', value: `<#${newS.channelId}>`, inline: true },
+      { name: 'In channel', value: `${newS.channel?.members?.size ?? '?'}`, inline: true }
+    );
+  } else if (oldS.channelId && !newS.channelId) {
+    e = logEmbed(0xe5484d, '🔇 Left Voice', member.user).addFields(
+      { name: 'Channel', value: `<#${oldS.channelId}>`, inline: true },
+      { name: 'In channel', value: `${oldS.channel?.members?.size ?? '?'}`, inline: true }
+    );
+  } else if (oldS.channelId !== newS.channelId) {
+    e = logEmbed(0x5865f2, '🔀 Moved Voice', member.user).addFields(
+      { name: 'From', value: `<#${oldS.channelId}>`, inline: true },
+      { name: 'To', value: `<#${newS.channelId}>`, inline: true }
+    );
+  } else return;
   sendLog(newS.guild, LOG.vc, e);
 });
 
 // role create / delete -> role-logs
-client.on(Events.GuildRoleCreate, (role) => sendLog(role.guild, LOG.role, logEmbed(0x0a9d6c, '➕ Role created').setDescription(`<@&${role.id}> · \`${role.name}\``)));
-client.on(Events.GuildRoleDelete, (role) => sendLog(role.guild, LOG.role, logEmbed(0xe5484d, '➖ Role deleted').setDescription(`\`${role.name}\``)));
+client.on(Events.GuildRoleCreate, (role) => sendLog(role.guild, LOG.role, new EmbedBuilder().setColor(0x0a9d6c).setTitle('➕ Role Created').setTimestamp().setDescription(`<@&${role.id}> · \`${role.name}\``).setFooter({ text: `Role ID: ${role.id}` })));
+client.on(Events.GuildRoleDelete, (role) => sendLog(role.guild, LOG.role, new EmbedBuilder().setColor(0xe5484d).setTitle('➖ Role Deleted').setTimestamp().setDescription(`\`${role.name}\``).setFooter({ text: `Role ID: ${role.id}` })));
 
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 process.on('uncaughtException', (e) => { console.error('uncaughtException:', e); process.exit(1); });
