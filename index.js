@@ -99,6 +99,7 @@ const AUTOPLAY_CHANNEL_ID = process.env.AUTOPLAY_CHANNEL_ID || ''; // optional: 
 const BITRATE = process.env.AUDIO_BITRATE || '96k';            // lower (e.g. 64k) to cut outbound bandwidth
 const NOWPLAYING_CHANNEL = process.env.NOWPLAYING_CHANNEL || 'now-playing'; // channel name for the live card
 const RADIO_LINK = process.env.RADIO_LINK || 'https://mavion.tmc.gg/radio'; // "Listen Live" button target
+const APPEAL_URL = process.env.APPEAL_URL || 'https://tmc.gg/appeal'; // shown to banned/kicked users
 const ACCENT = 0x7c4dff;
 
 if (!TOKEN) { console.error('FATAL: DISCORD_TOKEN is not set.'); process.exit(1); }
@@ -269,7 +270,7 @@ const commands = [
     .addStringOption((o) => o.setName('message').setDescription('The announcement text').setRequired(true))
     .addRoleOption((o) => o.setName('also_role').setDescription('Optional second role to include').setRequired(false))
     .addStringOption((o) => o.setName('title').setDescription('Optional title for the announcement').setRequired(false))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .setDMPermission(false)
 ].map((c) => c.toJSON());
 
@@ -472,28 +473,40 @@ function modLog(guild, color, title, target, mod, reason, extraField) {
   if (extraField) e.addFields(extraField);
   sendLog(guild, LOG.mod, e);
 }
+// DM the punished user (best-effort) with the reason and, optionally, the appeal link.
+async function dmPunish(user, title, bodyLine, reason, color, appeal) {
+  try {
+    const e = new EmbedBuilder().setColor(color).setTitle(title).setDescription(bodyLine)
+      .addFields({ name: 'Reason', value: reason || 'No reason given' });
+    if (appeal) e.addFields({ name: '📩 Appeal', value: `Think this was a mistake? Submit an appeal here:\n${APPEAL_URL}` });
+    await user.send({ embeds: [e] });
+    return true;
+  } catch { return false; }
+}
 
 async function cmdBan(interaction) {
   const user = interaction.options.getUser('user');
   const reason = interaction.options.getString('reason') || 'No reason given';
   const days = Math.min(7, Math.max(0, interaction.options.getInteger('delete_days') || 0));
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const dmed = await dmPunish(user, '🔨 You were banned', `You have been banned from **${interaction.guild.name}**.`, reason, 0x8b0000, true);
   try {
     markAction('ban:' + user.id);
     await interaction.guild.bans.create(user.id, { reason: `${reason} — by ${interaction.user.tag}`, deleteMessageSeconds: days * 86400 });
     modLog(interaction.guild, 0x8b0000, '🔨 Member Banned', user, interaction.user, reason);
-    return interaction.editReply(`🔨 Banned **${user.tag}** — ${reason}`);
+    return interaction.editReply(`🔨 Banned **${user.tag}** — ${reason}${dmed ? ' · DM sent' : ' · (couldn’t DM)'}`);
   } catch (e) { recentActions.delete('ban:' + user.id); return interaction.editReply(`Couldn't ban: ${e.message}`); }
 }
 async function cmdKick(interaction) {
   const user = interaction.options.getUser('user');
   const reason = interaction.options.getString('reason') || 'No reason given';
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const dmed = await dmPunish(user, '👢 You were kicked', `You have been kicked from **${interaction.guild.name}**.`, reason, 0xe5484d, true);
   try {
     markAction('kick:' + user.id);
     await interaction.guild.members.kick(user.id, `${reason} — by ${interaction.user.tag}`);
     modLog(interaction.guild, 0xe5484d, '👢 Member Kicked', user, interaction.user, reason);
-    return interaction.editReply(`👢 Kicked **${user.tag}** — ${reason}`);
+    return interaction.editReply(`👢 Kicked **${user.tag}** — ${reason}${dmed ? ' · DM sent' : ' · (couldn’t DM)'}`);
   } catch (e) { recentActions.delete('kick:' + user.id); return interaction.editReply(`Couldn't kick: ${e.message}`); }
 }
 async function cmdTimeout(interaction) {
@@ -502,12 +515,13 @@ async function cmdTimeout(interaction) {
   const ms = parseDuration(interaction.options.getString('duration'));
   if (!ms || ms > 28 * 86400000) return interaction.reply({ content: 'Use a duration like `30s`, `10m`, `1h`, `1d` (max 28d).', flags: MessageFlags.Ephemeral });
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const dmed = await dmPunish(user, '⏳ You were timed out', `You have been timed out in **${interaction.guild.name}** for ${interaction.options.getString('duration')}.`, reason, 0xb06d00, false);
   try {
     const member = await interaction.guild.members.fetch(user.id);
     markAction('timeout:' + user.id);
     await member.timeout(ms, `${reason} — by ${interaction.user.tag}`);
     modLog(interaction.guild, 0xb06d00, '⏳ Member Timed Out', user, interaction.user, reason, { name: 'Duration', value: interaction.options.getString('duration'), inline: true });
-    return interaction.editReply(`⏳ Timed out **${user.tag}** for ${interaction.options.getString('duration')} — ${reason}`);
+    return interaction.editReply(`⏳ Timed out **${user.tag}** for ${interaction.options.getString('duration')} — ${reason}${dmed ? ' · DM sent' : ''}`);
   } catch (e) { recentActions.delete('timeout:' + user.id); return interaction.editReply(`Couldn't time out: ${e.message}`); }
 }
 async function cmdUntimeout(interaction) {
