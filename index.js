@@ -31,6 +31,7 @@ const NOWPLAYING_URL = process.env.TMCAST_NOWPLAYING_URL || process.env.AZURACAS
 const STATION_NAME = process.env.STATION_NAME || 'the radio';
 const GUILD_ID = process.env.GUILD_ID || '';                   // optional: instant slash-command registration
 const AUTOPLAY_CHANNEL_ID = process.env.AUTOPLAY_CHANNEL_ID || ''; // optional: auto-join + play on startup
+const BITRATE = process.env.AUDIO_BITRATE || '96k';            // lower (e.g. 64k) to cut outbound bandwidth
 const ACCENT = 0x7c4dff;
 
 if (!TOKEN) { console.error('FATAL: DISCORD_TOKEN is not set.'); process.exit(1); }
@@ -54,7 +55,7 @@ function spawnStream() {
     '-i', STREAM_URL,
     '-vn',
     '-c:a', 'libopus',
-    '-b:a', '96k',
+    '-b:a', BITRATE,
     '-ar', '48000',
     '-ac', '2',
     '-f', 'ogg',
