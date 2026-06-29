@@ -37,8 +37,8 @@ const BITRATE = process.env.AUDIO_BITRATE || '96k';            // lower (e.g. 64
 const ACCENT = 0x7c4dff;
 
 if (!TOKEN) { console.error('FATAL: DISCORD_TOKEN is not set.'); process.exit(1); }
-if (!STREAM_URL) { console.error('FATAL: AZURACAST_STREAM_URL is not set.'); process.exit(1); }
-if (!ffmpegPath) { console.error('FATAL: ffmpeg-static did not provide a binary.'); process.exit(1); }
+if (!STREAM_URL) console.warn('Note: TMCAST_STREAM_URL not set — /play (radio) is disabled; admin + logging work normally.');
+if (!ffmpegPath) console.warn('Note: ffmpeg-static unavailable — /play (radio) is disabled.');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -170,6 +170,7 @@ async function registerCommands(clientId) {
 
 // ---- command handlers ----
 async function cmdPlay(interaction) {
+  if (!STREAM_URL || !ffmpegPath) return interaction.reply({ content: 'Radio isn’t configured on this bot.', flags: MessageFlags.Ephemeral });
   const channel = interaction.member?.voice?.channel;
   if (!channel) {
     return interaction.reply({ content: 'Join a voice channel first, then run **/play**.', flags: MessageFlags.Ephemeral });
@@ -289,7 +290,7 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}`);
   try { await registerCommands(c.user.id); } catch (e) { console.error('Command registration failed:', e.message); }
 
-  if (AUTOPLAY_CHANNEL_ID) {
+  if (AUTOPLAY_CHANNEL_ID && STREAM_URL) {
     try {
       const ch = await c.channels.fetch(AUTOPLAY_CHANNEL_ID);
       if (ch && ch.isVoiceBased()) { await connectAndPlay(ch); console.log(`Auto-joined ${ch.name}.`); }
