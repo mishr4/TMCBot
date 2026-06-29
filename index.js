@@ -17,7 +17,8 @@
 const {
   Client, GatewayIntentBits, Events, Partials, AuditLogEvent, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, ChannelType, AttachmentBuilder
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, ChannelType, AttachmentBuilder,
+  ContainerBuilder, TextDisplayBuilder, SectionBuilder, SeparatorBuilder, ThumbnailBuilder
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
@@ -1001,24 +1002,55 @@ function npRow() {
     new ButtonBuilder().setLabel('🎧 Listen Live').setStyle(ButtonStyle.Link).setURL(RADIO_LINK)
   );
 }
+// Components V2 container — the modern card layout.
+function npComponents(np) {
+  const c = new ContainerBuilder().setAccentColor(ACCENT);
+  const head = `### ${np.isLive ? '🔴 LIVE' : '🎵 Now Playing'} · ${np.station}\n## ${np.title}${np.artist ? `\n*by ${np.artist}*` : ''}`;
+  if (np.art) {
+    c.addSectionComponents(
+      new SectionBuilder()
+        .addTextDisplayComponents(new TextDisplayBuilder().setContent(head))
+        .setThumbnailAccessory(new ThumbnailBuilder().setURL(np.art))
+    );
+  } else {
+    c.addTextDisplayComponents(new TextDisplayBuilder().setContent(head));
+  }
+  const meta = [];
+  const bar = progressBar(np.elapsed, np.duration);
+  if (bar) meta.push('`' + bar + '`');
+  const sub = [];
+  if (np.isLive && np.streamer) sub.push(`🎙️ ${np.streamer}`);
+  if (np.listeners != null) sub.push(`👥 ${np.listeners} listening`);
+  if (sub.length) meta.push(sub.join('    ·    '));
+  if (meta.length) c.addTextDisplayComponents(new TextDisplayBuilder().setContent(meta.join('\n')));
+  if (np.hist.length) {
+    c.addSeparatorComponents(new SeparatorBuilder());
+    c.addTextDisplayComponents(new TextDisplayBuilder().setContent('**Recently played**\n' + np.hist.map((h) => `\`•\` ${h.title}${h.artist ? ` — ${h.artist}` : ''}`).join('\n')));
+  }
+  c.addActionRowComponents(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('🎧 Listen Live').setStyle(ButtonStyle.Link).setURL(RADIO_LINK)
+  ));
+  return c;
+}
 async function updateNowPlaying(guild, np) {
   const channel = logChannel(guild, NOWPLAYING_CHANNEL);
   if (!channel) return;
-  const payload = { embeds: [npEmbed(np)], components: [npRow()] };
   let msg = npMessages.get(guild.id);
+  if (!msg) {
+    const recent = await channel.messages.fetch({ limit: 10 }).catch(() => null);
+    msg = (recent && recent.find((m) => m.author.id === client.user.id && (m.components.length || m.embeds.length))) || null;
+  }
   try {
-    if (!msg) {
-      // Reuse the bot's existing card if one's already there (e.g. after a restart).
-      const recent = await channel.messages.fetch({ limit: 10 }).catch(() => null);
-      const mine = recent && recent.find((m) => m.author.id === client.user.id && m.embeds.length);
-      msg = mine || await channel.send(payload);
-      npMessages.set(guild.id, msg);
-      if (mine) await msg.edit(payload);
+    if (msg && msg.flags && msg.flags.has(MessageFlags.IsComponentsV2)) {
+      await msg.edit({ components: [npComponents(np)] });
     } else {
-      await msg.edit(payload);
+      if (msg) await msg.delete().catch(() => {}); // replace an old (embed) card with the V2 one
+      msg = await channel.send({ flags: MessageFlags.IsComponentsV2, components: [npComponents(np)] });
     }
-  } catch {
-    npMessages.delete(guild.id); // message gone -> repost next cycle
+    npMessages.set(guild.id, msg);
+  } catch (e) {
+    console.error('now-playing update failed:', e.message);
+    npMessages.delete(guild.id); // retry fresh next cycle
   }
 }
 async function tickNowPlaying() {
