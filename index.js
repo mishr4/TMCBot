@@ -100,6 +100,14 @@ const BITRATE = process.env.AUDIO_BITRATE || '96k';            // lower (e.g. 64
 const NOWPLAYING_CHANNEL = process.env.NOWPLAYING_CHANNEL || 'now-playing'; // channel name for the live card
 const RADIO_LINK = process.env.RADIO_LINK || 'https://mavion.tmc.gg/radio'; // "Listen Live" button target
 const APPEAL_URL = process.env.APPEAL_URL || 'https://tmc.gg/appeal'; // shown to banned/kicked users
+// Roles allowed to use the moderation commands (plus anyone with Administrator). Comma-separated.
+const MOD_ROLE_IDS = (process.env.MOD_ROLE_IDS || '1447075918089687090').split(',').map((s) => s.trim()).filter(Boolean);
+const MOD_CMDS = new Set(['ban', 'kick', 'timeout', 'untimeout', 'warn', 'purge', 'slowmode']);
+function isMod(member) {
+  if (!member) return false;
+  if (member.permissions && member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  return MOD_ROLE_IDS.some((id) => member.roles && member.roles.cache && member.roles.cache.has(id));
+}
 const ACCENT = 0x7c4dff;
 
 if (!TOKEN) { console.error('FATAL: DISCORD_TOKEN is not set.'); process.exit(1); }
@@ -218,29 +226,29 @@ const commands = [
     .addUserOption((o) => o.setName('user').setDescription('Who to ban').setRequired(true))
     .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(false))
     .addIntegerOption((o) => o.setName('delete_days').setDescription('Delete their messages from the last N days (0-7)').setRequired(false))
-    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('kick').setDescription('Kick a member')
     .addUserOption((o) => o.setName('user').setDescription('Who to kick').setRequired(true))
     .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(false))
-    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('timeout').setDescription('Time a member out')
     .addUserOption((o) => o.setName('user').setDescription('Who to time out').setRequired(true))
     .addStringOption((o) => o.setName('duration').setDescription('e.g. 30s, 10m, 1h, 1d (max 28d)').setRequired(true))
     .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(false))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('untimeout').setDescription('Remove a member’s timeout')
     .addUserOption((o) => o.setName('user').setDescription('Who to un-timeout').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('warn').setDescription('Warn a member (logged + DM’d)')
     .addUserOption((o) => o.setName('user').setDescription('Who to warn').setRequired(true))
     .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('purge').setDescription('Bulk-delete recent messages in this channel')
     .addIntegerOption((o) => o.setName('count').setDescription('How many (1-100)').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('slowmode').setDescription('Set this channel’s slowmode')
     .addIntegerOption((o) => o.setName('seconds').setDescription('Seconds between messages (0 = off)').setRequired(true))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels).setDMPermission(false),
+    .setDMPermission(false),
   new SlashCommandBuilder().setName('partner').setDescription('Manage partner listings')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false)
     .addSubcommand((s) => s.setName('add').setDescription('Add a partner to #partners')
@@ -673,6 +681,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton()) return await handleButton(interaction);
     if (!interaction.isChatInputCommand()) return;
     const n = interaction.commandName;
+    if (MOD_CMDS.has(n) && !isMod(interaction.member)) {
+      return interaction.reply({ content: 'You don’t have permission to use this command.', flags: MessageFlags.Ephemeral });
+    }
     if (n === 'play') return await cmdPlay(interaction);
     if (n === 'stop') return await cmdStop(interaction);
     if (n === 'nowplaying') return await cmdNowPlaying(interaction);
