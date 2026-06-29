@@ -279,6 +279,8 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder().setName('testcard').setDescription('Preview the welcome card (test rendering)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
+  new SlashCommandBuilder().setName('dmtest').setDescription('Test whether the bot can DM you (shows the exact error)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder()
     .setName('staff-dm')
     .setDescription('DM everyone in a role an announcement')
@@ -670,6 +672,16 @@ async function cmdTestcard(interaction) {
   return interaction.editReply({ content: '🖼️ Welcome card preview:', files: [new AttachmentBuilder(buf, { name: 'welcome.png' })] });
 }
 
+async function cmdDmtest(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    await interaction.user.send('✅ DM test from TMCBot — DMs are working.');
+    return interaction.editReply('✅ I just DMed you successfully — the bot CAN send DMs. So when a warn/ban says "couldn’t DM," that **specific person** has DMs off.');
+  } catch (e) {
+    return interaction.editReply(`❌ I could not DM you.\n**Error:** ${e.message} (code \`${e.code || '?'}\`)\n\nIf your DMs are on and I'm not blocked, this is almost certainly Discord **flagging/rate-limiting the bot's DMs** — usually triggered by mass-DMing (the \`/staff-dm\` command). That's an account-level block (not the code) and clears with time; avoid \`/staff-dm\` to large roles.`);
+  }
+}
+
 async function handleButton(interaction) {
   const id = interaction.customId;
   if (id === 'ticket_open') {
@@ -782,6 +794,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (n === 'selfroles-panel') return await cmdSelfroles(interaction);
     if (n === 'verify-panel') return await cmdVerifyPanel(interaction);
     if (n === 'testcard') return await cmdTestcard(interaction);
+    if (n === 'dmtest') return await cmdDmtest(interaction);
   } catch (e) {
     console.error('interaction error:', e);
     const payload = { content: '⚠️ ' + (e.message || 'Something went wrong.'), flags: MessageFlags.Ephemeral };
