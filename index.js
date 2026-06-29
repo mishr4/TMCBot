@@ -277,6 +277,8 @@ const commands = [
     .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
     .addStringOption((o) => o.setName('description').setDescription('Panel text').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
+  new SlashCommandBuilder().setName('testcard').setDescription('Preview the welcome card (test rendering)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder()
     .setName('staff-dm')
     .setDescription('DM everyone in a role an announcement')
@@ -660,6 +662,14 @@ async function cmdVerifyPanel(interaction) {
   return interaction.reply({ content: `Verification panel posted — clicking it grants <@&${role.id}>.`, flags: MessageFlags.Ephemeral });
 }
 
+async function cmdTestcard(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!Canvas) return interaction.editReply('Canvas isn’t available here — welcome would use the embed fallback.');
+  const buf = await makeWelcomeCard(interaction.member);
+  if (!buf) return interaction.editReply('Card render returned nothing — check the logs for "welcome card failed".');
+  return interaction.editReply({ content: '🖼️ Welcome card preview:', files: [new AttachmentBuilder(buf, { name: 'welcome.png' })] });
+}
+
 async function handleButton(interaction) {
   const id = interaction.customId;
   if (id === 'ticket_open') {
@@ -771,6 +781,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (n === 'ticket-panel') return await cmdTicketPanel(interaction);
     if (n === 'selfroles-panel') return await cmdSelfroles(interaction);
     if (n === 'verify-panel') return await cmdVerifyPanel(interaction);
+    if (n === 'testcard') return await cmdTestcard(interaction);
   } catch (e) {
     console.error('interaction error:', e);
     const payload = { content: '⚠️ ' + (e.message || 'Something went wrong.'), flags: MessageFlags.Ephemeral };
