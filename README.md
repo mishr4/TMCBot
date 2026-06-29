@@ -33,18 +33,16 @@ The stream is also set to auto-reconnect, and the bot restarts the audio automat
    https://discord.com/oauth2/authorize?client_id=CLIENT_ID&permissions=3165184&scope=bot%20applications.commands
    ```
 
-## 2. Deploy on Railway (alongside AzuraCast)
-1. Push this folder to a GitHub repo.
-2. Railway → your existing project → **New** → **GitHub Repo** → pick this repo. Railway auto-detects Node and runs `npm start` (no Dockerfile needed).
-3. Add the **Variables** from `.env.example` (at minimum `DISCORD_TOKEN` and `TMCAST_STREAM_URL` — e.g. `https://cast.tmc.gg/listen/one/radio.mp3`). Set `GUILD_ID` to your server's ID so the commands show up instantly, and `TMCAST_NOWPLAYING_URL` (e.g. `https://cast.tmc.gg/api/np/one`) to enable `/nowplaying`.
-4. Deploy. It runs as a worker — Railway keeps it alive 24/7 and it won't sleep.
+## 2. Deploy
+See **[DEPLOY.md](DEPLOY.md)** for the full walkthrough (Google Cloud free VM). The same `setup.sh` works on any Ubuntu/Debian VM.
 
-This is tiny (~70 MB RAM, near-zero CPU when no one's in voice), so it fits comfortably inside the $5 plan you already pay for.
+> ⚠️ **Don't host this on Railway.** Railway doesn't route the outbound UDP that Discord voice needs, so `/play` will time out there (everything else works, but voice won't). Use a VM (GCP free tier, a VPS, etc.).
 
-## Local dev
+## Local dev / quick test
 ```bash
 npm install
-cp .env.example .env   # fill in DISCORD_TOKEN + AZURACAST_STREAM_URL
+# set env vars then run (PowerShell example):
+#   $env:DISCORD_TOKEN="..."; $env:TMCAST_STREAM_URL="https://cast.tmc.gg/listen/one/radio.mp3"; node index.js
 npm start
 ```
 
