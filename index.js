@@ -272,6 +272,11 @@ const commands = [
     .addRoleOption((o) => o.setName('role4').setDescription('Role 4').setRequired(false))
     .addRoleOption((o) => o.setName('role5').setDescription('Role 5').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
+  new SlashCommandBuilder().setName('verify-panel').setDescription('Post a verify button that grants a role (anti-bot gate)')
+    .addRoleOption((o) => o.setName('role').setDescription('Role to grant when they verify').setRequired(true))
+    .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
+    .addStringOption((o) => o.setName('description').setDescription('Panel text').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder()
     .setName('staff-dm')
     .setDescription('DM everyone in a role an announcement')
@@ -501,7 +506,7 @@ async function dmPunish(user, title, bodyLine, reason, color, appeal) {
     if (appeal) e.addFields({ name: '📩 Appeal', value: `Think this was a mistake? Submit an appeal here:\n${APPEAL_URL}` });
     await user.send({ embeds: [e] });
     return true;
-  } catch { return false; }
+  } catch (e) { console.error(`DM to ${user && user.id} failed:`, e.message); return false; }
 }
 
 async function cmdBan(interaction) {
@@ -561,7 +566,7 @@ async function cmdWarn(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   modLog(interaction.guild, 0xf5a623, '⚠️ Member Warned', user, interaction.user, reason);
   let dm = '';
-  try { await user.send(`⚠️ You were warned in **${interaction.guild.name}**: ${reason}`); } catch { dm = ' (couldn’t DM them)'; }
+  try { await user.send(`⚠️ You were warned in **${interaction.guild.name}**: ${reason}`); } catch (e) { console.error('warn DM failed:', e.message); dm = ' (couldn’t DM them)'; }
   return interaction.editReply(`⚠️ Warned **${user.tag}** — ${reason}${dm}`);
 }
 async function cmdPurge(interaction) {
@@ -628,6 +633,16 @@ async function cmdSelfroles(interaction) {
   return interaction.reply({ content: 'Self-roles panel posted.', flags: MessageFlags.Ephemeral });
 }
 
+async function cmdVerifyPanel(interaction) {
+  const role = interaction.options.getRole('role');
+  const title = interaction.options.getString('title') || '✅ Verify yourself';
+  const desc = interaction.options.getString('description') || 'Click the button below to verify you’re human and unlock the rest of the server. Bots can’t click it.';
+  const e = new EmbedBuilder().setColor(ACCENT).setTitle(title).setDescription(desc).setFooter({ text: 'TMC' });
+  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`verify_${role.id}`).setLabel('Verify').setEmoji('✅').setStyle(ButtonStyle.Success));
+  await interaction.channel.send({ embeds: [e], components: [row] });
+  return interaction.reply({ content: `Verification panel posted — clicking it grants <@&${role.id}>.`, flags: MessageFlags.Ephemeral });
+}
+
 async function handleButton(interaction) {
   const id = interaction.customId;
   if (id === 'ticket_open') {
@@ -658,6 +673,13 @@ async function handleButton(interaction) {
       return interaction.reply({ content: has ? `Removed <@&${roleId}>` : `Added <@&${roleId}>`, flags: MessageFlags.Ephemeral });
     } catch (e) { return interaction.reply({ content: 'Couldn’t change that role — make sure my role is above it.', flags: MessageFlags.Ephemeral }); }
   }
+  if (id.startsWith('verify_')) {
+    const roleId = id.slice('verify_'.length);
+    const member = interaction.member;
+    if (member.roles.cache.has(roleId)) return interaction.reply({ content: 'You’re already verified ✅', flags: MessageFlags.Ephemeral });
+    try { await member.roles.add(roleId); return interaction.reply({ content: 'Verified — welcome in! ✅', flags: MessageFlags.Ephemeral }); }
+    catch (e) { return interaction.reply({ content: 'Couldn’t verify you — a staff member needs to move my role above the verified role.', flags: MessageFlags.Ephemeral }); }
+  }
 }
 
 // ---- wiring ----
@@ -686,6 +708,16 @@ client.once(Events.ClientReady, async (c) => {
   }
 
   startNowPlaying();
+
+  // startup diagnostics — shows WHY cards/logs might not appear
+  console.log('Welcome-card canvas:', Canvas ? 'loaded ✓' : 'NOT loaded (welcome falls back to embed)');
+  for (const g of c.guilds.cache.values()) {
+    const names = ['welcome', 'now-playing', 'partners', 'msg-logs', 'mod-logs', 'role-logs', 'user-logs', 'vc-logs'];
+    const found = names.filter((n) => logChannel(g, n));
+    const me = g.members.me;
+    console.log(`[${g.name}] card/log channels found: ${found.join(', ') || 'NONE — channel names must match exactly'}`);
+    console.log(`[${g.name}] my perms: Admin=${!!(me && me.permissions.has(PermissionFlagsBits.Administrator))} Send=${!!(me && me.permissions.has(PermissionFlagsBits.SendMessages))} Embed=${!!(me && me.permissions.has(PermissionFlagsBits.EmbedLinks))} Attach=${!!(me && me.permissions.has(PermissionFlagsBits.AttachFiles))}`);
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -711,6 +743,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (n === 'partner') return await cmdPartner(interaction);
     if (n === 'ticket-panel') return await cmdTicketPanel(interaction);
     if (n === 'selfroles-panel') return await cmdSelfroles(interaction);
+    if (n === 'verify-panel') return await cmdVerifyPanel(interaction);
   } catch (e) {
     console.error('interaction error:', e);
     const payload = { content: '⚠️ ' + (e.message || 'Something went wrong.'), flags: MessageFlags.Ephemeral };
