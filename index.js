@@ -17,7 +17,7 @@
 const {
   Client, GatewayIntentBits, Events, Partials, AuditLogEvent, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, ChannelType
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
@@ -151,6 +151,55 @@ const commands = [
   new SlashCommandBuilder().setName('nowplaying').setDescription('Show what is currently playing on the radio'),
   new SlashCommandBuilder().setName('roblox').setDescription('Look up a Roblox profile')
     .addStringOption((o) => o.setName('username').setDescription('Roblox username').setRequired(true)),
+  new SlashCommandBuilder().setName('ban').setDescription('Ban a member')
+    .addUserOption((o) => o.setName('user').setDescription('Who to ban').setRequired(true))
+    .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(false))
+    .addIntegerOption((o) => o.setName('delete_days').setDescription('Delete their messages from the last N days (0-7)').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers).setDMPermission(false),
+  new SlashCommandBuilder().setName('kick').setDescription('Kick a member')
+    .addUserOption((o) => o.setName('user').setDescription('Who to kick').setRequired(true))
+    .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers).setDMPermission(false),
+  new SlashCommandBuilder().setName('timeout').setDescription('Time a member out')
+    .addUserOption((o) => o.setName('user').setDescription('Who to time out').setRequired(true))
+    .addStringOption((o) => o.setName('duration').setDescription('e.g. 30s, 10m, 1h, 1d (max 28d)').setRequired(true))
+    .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).setDMPermission(false),
+  new SlashCommandBuilder().setName('untimeout').setDescription('Remove a member’s timeout')
+    .addUserOption((o) => o.setName('user').setDescription('Who to un-timeout').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).setDMPermission(false),
+  new SlashCommandBuilder().setName('warn').setDescription('Warn a member (logged + DM’d)')
+    .addUserOption((o) => o.setName('user').setDescription('Who to warn').setRequired(true))
+    .addStringOption((o) => o.setName('reason').setDescription('Reason').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers).setDMPermission(false),
+  new SlashCommandBuilder().setName('purge').setDescription('Bulk-delete recent messages in this channel')
+    .addIntegerOption((o) => o.setName('count').setDescription('How many (1-100)').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages).setDMPermission(false),
+  new SlashCommandBuilder().setName('slowmode').setDescription('Set this channel’s slowmode')
+    .addIntegerOption((o) => o.setName('seconds').setDescription('Seconds between messages (0 = off)').setRequired(true))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels).setDMPermission(false),
+  new SlashCommandBuilder().setName('partner').setDescription('Manage partner listings')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false)
+    .addSubcommand((s) => s.setName('add').setDescription('Add a partner to #partners')
+      .addStringOption((o) => o.setName('name').setDescription('Partner name').setRequired(true))
+      .addStringOption((o) => o.setName('invite').setDescription('Invite link / URL').setRequired(true))
+      .addStringOption((o) => o.setName('description').setDescription('Short description').setRequired(false))
+      .addStringOption((o) => o.setName('banner').setDescription('Banner image URL').setRequired(false)))
+    .addSubcommand((s) => s.setName('remove').setDescription('Remove a partner by exact name')
+      .addStringOption((o) => o.setName('name').setDescription('Exact partner name').setRequired(true))),
+  new SlashCommandBuilder().setName('ticket-panel').setDescription('Post an Apply / ticket panel in this channel')
+    .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
+    .addStringOption((o) => o.setName('description').setDescription('Panel text').setRequired(false))
+    .addStringOption((o) => o.setName('button_label').setDescription('Button label').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
+  new SlashCommandBuilder().setName('selfroles-panel').setDescription('Post a self-roles button panel in this channel')
+    .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
+    .addRoleOption((o) => o.setName('role').setDescription('Role 1').setRequired(true))
+    .addRoleOption((o) => o.setName('role2').setDescription('Role 2').setRequired(false))
+    .addRoleOption((o) => o.setName('role3').setDescription('Role 3').setRequired(false))
+    .addRoleOption((o) => o.setName('role4').setDescription('Role 4').setRequired(false))
+    .addRoleOption((o) => o.setName('role5').setDescription('Role 5').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder()
     .setName('staff-dm')
     .setDescription('DM everyone in a role an announcement')
@@ -340,6 +389,181 @@ async function cmdStaffDm(interaction) {
   return interaction.editReply(summary);
 }
 
+// ---- moderation + community commands ----
+// Suppress duplicate logs: a command marks its action so the gateway event handler skips it.
+const recentActions = new Set();
+function markAction(key) { recentActions.add(key); setTimeout(() => recentActions.delete(key), 10000); }
+function wasRecent(key) { if (recentActions.has(key)) { recentActions.delete(key); return true; } return false; }
+
+function parseDuration(str) {
+  const m = String(str || '').trim().match(/^(\d+)\s*(s|m|h|d)?$/i);
+  if (!m) return null;
+  const mult = { s: 1000, m: 60000, h: 3600000, d: 86400000 }[(m[2] || 'm').toLowerCase()];
+  return parseInt(m[1], 10) * mult;
+}
+function modLog(guild, color, title, target, mod, reason, extraField) {
+  const e = logEmbed(color, title, target).setDescription(`<@${target.id}>`)
+    .addFields(
+      { name: 'Moderator', value: mod ? `<@${mod.id}>` : 'Unknown', inline: true },
+      { name: 'Reason', value: reason || 'No reason given', inline: true }
+    );
+  if (extraField) e.addFields(extraField);
+  sendLog(guild, LOG.mod, e);
+}
+
+async function cmdBan(interaction) {
+  const user = interaction.options.getUser('user');
+  const reason = interaction.options.getString('reason') || 'No reason given';
+  const days = Math.min(7, Math.max(0, interaction.options.getInteger('delete_days') || 0));
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    markAction('ban:' + user.id);
+    await interaction.guild.bans.create(user.id, { reason: `${reason} — by ${interaction.user.tag}`, deleteMessageSeconds: days * 86400 });
+    modLog(interaction.guild, 0x8b0000, '🔨 Member Banned', user, interaction.user, reason);
+    return interaction.editReply(`🔨 Banned **${user.tag}** — ${reason}`);
+  } catch (e) { recentActions.delete('ban:' + user.id); return interaction.editReply(`Couldn't ban: ${e.message}`); }
+}
+async function cmdKick(interaction) {
+  const user = interaction.options.getUser('user');
+  const reason = interaction.options.getString('reason') || 'No reason given';
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    markAction('kick:' + user.id);
+    await interaction.guild.members.kick(user.id, `${reason} — by ${interaction.user.tag}`);
+    modLog(interaction.guild, 0xe5484d, '👢 Member Kicked', user, interaction.user, reason);
+    return interaction.editReply(`👢 Kicked **${user.tag}** — ${reason}`);
+  } catch (e) { recentActions.delete('kick:' + user.id); return interaction.editReply(`Couldn't kick: ${e.message}`); }
+}
+async function cmdTimeout(interaction) {
+  const user = interaction.options.getUser('user');
+  const reason = interaction.options.getString('reason') || 'No reason given';
+  const ms = parseDuration(interaction.options.getString('duration'));
+  if (!ms || ms > 28 * 86400000) return interaction.reply({ content: 'Use a duration like `30s`, `10m`, `1h`, `1d` (max 28d).', flags: MessageFlags.Ephemeral });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const member = await interaction.guild.members.fetch(user.id);
+    markAction('timeout:' + user.id);
+    await member.timeout(ms, `${reason} — by ${interaction.user.tag}`);
+    modLog(interaction.guild, 0xb06d00, '⏳ Member Timed Out', user, interaction.user, reason, { name: 'Duration', value: interaction.options.getString('duration'), inline: true });
+    return interaction.editReply(`⏳ Timed out **${user.tag}** for ${interaction.options.getString('duration')} — ${reason}`);
+  } catch (e) { recentActions.delete('timeout:' + user.id); return interaction.editReply(`Couldn't time out: ${e.message}`); }
+}
+async function cmdUntimeout(interaction) {
+  const user = interaction.options.getUser('user');
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const member = await interaction.guild.members.fetch(user.id);
+    markAction('timeout:' + user.id);
+    await member.timeout(null, `by ${interaction.user.tag}`);
+    modLog(interaction.guild, 0x0a9d6c, '⏳ Timeout Removed', user, interaction.user, 'Manual removal');
+    return interaction.editReply(`Removed timeout on **${user.tag}**.`);
+  } catch (e) { recentActions.delete('timeout:' + user.id); return interaction.editReply(`Couldn't remove timeout: ${e.message}`); }
+}
+async function cmdWarn(interaction) {
+  const user = interaction.options.getUser('user');
+  const reason = interaction.options.getString('reason');
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  modLog(interaction.guild, 0xf5a623, '⚠️ Member Warned', user, interaction.user, reason);
+  let dm = '';
+  try { await user.send(`⚠️ You were warned in **${interaction.guild.name}**: ${reason}`); } catch { dm = ' (couldn’t DM them)'; }
+  return interaction.editReply(`⚠️ Warned **${user.tag}** — ${reason}${dm}`);
+}
+async function cmdPurge(interaction) {
+  const count = Math.min(100, Math.max(1, interaction.options.getInteger('count')));
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const deleted = await interaction.channel.bulkDelete(count, true);
+    return interaction.editReply(`🧹 Deleted ${deleted.size} message(s). (Messages older than 14 days can’t be bulk-deleted.)`);
+  } catch (e) { return interaction.editReply(`Couldn't purge: ${e.message}`); }
+}
+async function cmdSlowmode(interaction) {
+  const sec = Math.min(21600, Math.max(0, interaction.options.getInteger('seconds')));
+  try {
+    await interaction.channel.setRateLimitPerSecond(sec, `by ${interaction.user.tag}`);
+    return interaction.reply({ content: sec ? `🐌 Slowmode set to ${sec}s.` : 'Slowmode turned off.', flags: MessageFlags.Ephemeral });
+  } catch (e) { return interaction.reply({ content: `Couldn't set slowmode: ${e.message}`, flags: MessageFlags.Ephemeral }); }
+}
+
+async function cmdPartner(interaction) {
+  const channel = logChannel(interaction.guild, 'partners');
+  if (!channel) return interaction.reply({ content: 'Create a channel named **#partners** first.', flags: MessageFlags.Ephemeral });
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'add') {
+    const name = interaction.options.getString('name');
+    let invite = interaction.options.getString('invite');
+    if (!/^https?:\/\//i.test(invite)) invite = 'https://' + invite;
+    const desc = interaction.options.getString('description') || '';
+    const banner = interaction.options.getString('banner');
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const e = new EmbedBuilder().setColor(ACCENT).setTitle(`🤝 ${name}`).setDescription(desc || '​').setFooter({ text: 'Partner of TMC' }).setTimestamp();
+    if (banner) e.setImage(banner);
+    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Join').setStyle(ButtonStyle.Link).setURL(invite));
+    try { await channel.send({ embeds: [e], components: [row] }); }
+    catch (err) { return interaction.editReply(`Couldn't post (is the invite a valid URL?): ${err.message}`); }
+    return interaction.editReply(`Added partner **${name}** to ${channel}.`);
+  }
+  const name = interaction.options.getString('name');
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const msgs = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const hit = msgs && msgs.find((m) => m.author.id === client.user.id && m.embeds[0] && m.embeds[0].title === `🤝 ${name}`);
+  if (!hit) return interaction.editReply(`No partner titled **${name}** found in ${channel}.`);
+  await hit.delete().catch(() => {});
+  return interaction.editReply(`Removed partner **${name}**.`);
+}
+
+async function cmdTicketPanel(interaction) {
+  const title = interaction.options.getString('title') || '📋 Apply / Support';
+  const desc = interaction.options.getString('description') || 'Click the button below to open a private ticket with the staff team.';
+  const label = interaction.options.getString('button_label') || 'Open a Ticket';
+  const e = new EmbedBuilder().setColor(ACCENT).setTitle(title).setDescription(desc).setFooter({ text: 'TMC' });
+  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_open').setLabel(label).setEmoji('🎫').setStyle(ButtonStyle.Primary));
+  await interaction.channel.send({ embeds: [e], components: [row] });
+  return interaction.reply({ content: 'Ticket panel posted.', flags: MessageFlags.Ephemeral });
+}
+
+async function cmdSelfroles(interaction) {
+  const title = interaction.options.getString('title') || '🎭 Self Roles';
+  const roles = [];
+  for (const k of ['role', 'role2', 'role3', 'role4', 'role5']) { const r = interaction.options.getRole(k); if (r) roles.push(r); }
+  if (!roles.length) return interaction.reply({ content: 'Add at least one role.', flags: MessageFlags.Ephemeral });
+  const e = new EmbedBuilder().setColor(ACCENT).setTitle(title).setDescription('Click a button to toggle a role on yourself.');
+  const row = new ActionRowBuilder().addComponents(roles.slice(0, 5).map((r) => new ButtonBuilder().setCustomId(`selfrole_${r.id}`).setLabel(r.name).setStyle(ButtonStyle.Secondary)));
+  await interaction.channel.send({ embeds: [e], components: [row] });
+  return interaction.reply({ content: 'Self-roles panel posted.', flags: MessageFlags.Ephemeral });
+}
+
+async function handleButton(interaction) {
+  const id = interaction.customId;
+  if (id === 'ticket_open') {
+    const ch = interaction.channel;
+    if (!ch || ch.type !== ChannelType.GuildText) return interaction.reply({ content: 'Tickets must be opened from a normal text channel.', flags: MessageFlags.Ephemeral });
+    const thread = await ch.threads.create({ name: `ticket-${interaction.user.username}`.slice(0, 90), type: ChannelType.PrivateThread, invitable: false, reason: 'Ticket opened' }).catch(() => null);
+    if (!thread) return interaction.reply({ content: 'Couldn’t create a ticket — I need Manage Threads / Create Private Threads here.', flags: MessageFlags.Ephemeral });
+    await thread.members.add(interaction.user.id).catch(() => {});
+    const e = new EmbedBuilder().setColor(ACCENT).setTitle('🎫 Ticket opened')
+      .setDescription(`Hi <@${interaction.user.id}> — a staff member will be with you shortly. Tell us what you need below.`);
+    const closeRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Danger));
+    await thread.send({ content: `<@${interaction.user.id}>`, embeds: [e], components: [closeRow] });
+    return interaction.reply({ content: `Your ticket: ${thread}`, flags: MessageFlags.Ephemeral });
+  }
+  if (id === 'ticket_close') {
+    if (!interaction.channel?.isThread?.()) return interaction.reply({ content: 'This isn’t a ticket.', flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: `🔒 Ticket closed by <@${interaction.user.id}>.` });
+    await interaction.channel.setLocked(true).catch(() => {});
+    await interaction.channel.setArchived(true).catch(() => {});
+    return;
+  }
+  if (id.startsWith('selfrole_')) {
+    const roleId = id.slice('selfrole_'.length);
+    const member = interaction.member;
+    const has = member.roles.cache.has(roleId);
+    try {
+      if (has) await member.roles.remove(roleId); else await member.roles.add(roleId);
+      return interaction.reply({ content: has ? `Removed <@&${roleId}>` : `Added <@&${roleId}>`, flags: MessageFlags.Ephemeral });
+    } catch (e) { return interaction.reply({ content: 'Couldn’t change that role — make sure my role is above it.', flags: MessageFlags.Ephemeral }); }
+  }
+}
+
 // ---- wiring ----
 const client = new Client({
   intents: [
@@ -369,15 +593,27 @@ client.once(Events.ClientReady, async (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
   try {
-    if (interaction.commandName === 'play') return await cmdPlay(interaction);
-    if (interaction.commandName === 'stop') return await cmdStop(interaction);
-    if (interaction.commandName === 'nowplaying') return await cmdNowPlaying(interaction);
-    if (interaction.commandName === 'roblox') return await cmdRoblox(interaction);
-    if (interaction.commandName === 'staff-dm') return await cmdStaffDm(interaction);
+    if (interaction.isButton()) return await handleButton(interaction);
+    if (!interaction.isChatInputCommand()) return;
+    const n = interaction.commandName;
+    if (n === 'play') return await cmdPlay(interaction);
+    if (n === 'stop') return await cmdStop(interaction);
+    if (n === 'nowplaying') return await cmdNowPlaying(interaction);
+    if (n === 'roblox') return await cmdRoblox(interaction);
+    if (n === 'staff-dm') return await cmdStaffDm(interaction);
+    if (n === 'ban') return await cmdBan(interaction);
+    if (n === 'kick') return await cmdKick(interaction);
+    if (n === 'timeout') return await cmdTimeout(interaction);
+    if (n === 'untimeout') return await cmdUntimeout(interaction);
+    if (n === 'warn') return await cmdWarn(interaction);
+    if (n === 'purge') return await cmdPurge(interaction);
+    if (n === 'slowmode') return await cmdSlowmode(interaction);
+    if (n === 'partner') return await cmdPartner(interaction);
+    if (n === 'ticket-panel') return await cmdTicketPanel(interaction);
+    if (n === 'selfroles-panel') return await cmdSelfroles(interaction);
   } catch (e) {
-    console.error(`/${interaction.commandName} error:`, e);
+    console.error('interaction error:', e);
     const payload = { content: '⚠️ ' + (e.message || 'Something went wrong.'), flags: MessageFlags.Ephemeral };
     if (interaction.deferred || interaction.replied) interaction.followUp(payload).catch(() => {});
     else interaction.reply(payload).catch(() => {});
@@ -455,8 +691,17 @@ client.on(Events.GuildMemberAdd, (m) => {
   sendLog(m.guild, LOG.user, logEmbed(0x0a9d6c, '📥 Member Joined', m.user)
     .setDescription(`<@${m.id}> joined — member **#${m.guild.memberCount}**.`)
     .addFields({ name: 'Account Created', value: `${full(m.user.createdTimestamp)} (${rel(m.user.createdTimestamp)})` }));
+  // welcome message in #welcome (if it exists)
+  const wc = logChannel(m.guild, 'welcome');
+  if (wc) {
+    const w = new EmbedBuilder().setColor(0x0a9d6c).setTitle(`👋 Welcome to ${m.guild.name}!`)
+      .setDescription(`Hey <@${m.id}>, glad you're here — you're member **#${m.guild.memberCount}**! 🎉`)
+      .setThumbnail(m.user.displayAvatarURL());
+    wc.send({ content: `<@${m.id}>`, embeds: [w] }).catch(() => {});
+  }
 });
 client.on(Events.GuildMemberRemove, async (m) => {
+  if (wasRecent('kick:' + m.id)) return; // already logged by /kick
   const kick = await findExecutor(m.guild, AuditLogEvent.MemberKick, m.id);
   if (kick) {
     sendLog(m.guild, LOG.mod, logEmbed(0xe5484d, '👢 Member Kicked', m.user)
@@ -478,6 +723,7 @@ client.on(Events.GuildMemberRemove, async (m) => {
 
 // bans -> mod-logs
 client.on(Events.GuildBanAdd, async (ban) => {
+  if (wasRecent('ban:' + ban.user.id)) return; // already logged by /ban
   const entry = await findExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
   sendLog(ban.guild, LOG.mod, logEmbed(0x8b0000, '🔨 Member Banned', ban.user)
     .setDescription(`<@${ban.user.id}>`)
@@ -513,7 +759,7 @@ client.on(Events.GuildMemberUpdate, (oldM, newM) => {
   }
   const oldTo = oldM.communicationDisabledUntilTimestamp || 0;
   const newTo = newM.communicationDisabledUntilTimestamp || 0;
-  if (oldTo !== newTo) {
+  if (oldTo !== newTo && !wasRecent('timeout:' + newM.id)) {
     if (newTo > Date.now()) {
       sendLog(newM.guild, LOG.mod, logEmbed(0xb06d00, '⏳ Member Timed Out', newM.user)
         .setDescription(`<@${newM.id}>`)
