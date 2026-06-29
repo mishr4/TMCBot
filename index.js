@@ -16,7 +16,8 @@
 
 const {
   Client, GatewayIntentBits, Events, Partials, AuditLogEvent, REST, Routes,
-  SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags
+  SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
@@ -34,6 +35,8 @@ const STATION_NAME = process.env.STATION_NAME || 'the radio';
 const GUILD_ID = process.env.GUILD_ID || '';                   // optional: instant slash-command registration
 const AUTOPLAY_CHANNEL_ID = process.env.AUTOPLAY_CHANNEL_ID || ''; // optional: auto-join + play on startup
 const BITRATE = process.env.AUDIO_BITRATE || '96k';            // lower (e.g. 64k) to cut outbound bandwidth
+const NOWPLAYING_CHANNEL = process.env.NOWPLAYING_CHANNEL || 'now-playing'; // channel name for the live card
+const RADIO_LINK = process.env.RADIO_LINK || 'https://mavion.tmc.gg/radio'; // "Listen Live" button target
 const ACCENT = 0x7c4dff;
 
 if (!TOKEN) { console.error('FATAL: DISCORD_TOKEN is not set.'); process.exit(1); }
@@ -220,8 +223,8 @@ async function cmdNowPlaying(interaction) {
   const listeners = typeof data.listeners === 'number'
     ? data.listeners
     : (data.listeners && (data.listeners.current ?? data.listeners.total));
-  const isLive = data.is_live ?? (data.live && data.live.is_live) ?? false;
-  const streamer = (data.live && data.live.streamer_name) || data.streamer_name;
+  const isLive = data.is_live ?? (typeof data.live === 'boolean' ? data.live : (data.live && data.live.is_live)) ?? false;
+  const streamer = (data.live && typeof data.live === 'object' && data.live.streamer_name) || data.streamer_name;
 
   const embed = new EmbedBuilder()
     .setColor(ACCENT)
@@ -300,6 +303,8 @@ client.once(Events.ClientReady, async (c) => {
       else console.error('AUTOPLAY_CHANNEL_ID is not a voice channel.');
     } catch (e) { console.error('Autoplay failed:', e.message); }
   }
+
+  startNowPlaying();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -484,6 +489,101 @@ client.on(Events.VoiceStateUpdate, (oldS, newS) => {
 // role create / delete -> role-logs
 client.on(Events.GuildRoleCreate, (role) => sendLog(role.guild, LOG.role, new EmbedBuilder().setColor(0x0a9d6c).setTitle('➕ Role Created').setTimestamp().setDescription(`<@&${role.id}> · \`${role.name}\``).setFooter({ text: `Role ID: ${role.id}` })));
 client.on(Events.GuildRoleDelete, (role) => sendLog(role.guild, LOG.role, new EmbedBuilder().setColor(0xe5484d).setTitle('➖ Role Deleted').setTimestamp().setDescription(`\`${role.name}\``).setFooter({ text: `Role ID: ${role.id}` })));
+
+// ---- live "now playing" card ----
+// Maintains ONE auto-updating embed in the #now-playing channel (found by name).
+const npMessages = new Map(); // guildId -> Message
+
+function fmtTime(s) { s = Math.max(0, Math.floor(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+function progressBar(elapsed, duration, len = 18) {
+  if (!duration || duration <= 0) return '';
+  const pos = Math.min(len, Math.max(0, Math.round((elapsed / duration) * len)));
+  return `${fmtTime(elapsed)} ${'─'.repeat(pos)}🔘${'─'.repeat(len - pos)} ${fmtTime(duration)}`;
+}
+function parseNP(data) {
+  if (Array.isArray(data)) data = data[0] || {};
+  const npRaw = data.now_playing || {};
+  const song = npRaw.song || npRaw; // nested (AzuraCast) or flat (TMCast)
+  const hist = (data.song_history || data.history || data.recently_played || []).map((h) => {
+    const s = h.song || h;
+    return { title: s.title || 'Unknown', artist: s.artist || '' };
+  }).slice(0, 5);
+  return {
+    title: song.title || 'Unknown',
+    artist: song.artist || '',
+    album: song.album || '',
+    art: song.artwork_url || song.art || (data.station && data.station.logo_url) || null,
+    duration: npRaw.duration || song.duration || 0,
+    elapsed: npRaw.elapsed || song.elapsed || 0,
+    station: (data.station && data.station.name) || 'Mavion Radio',
+    listeners: typeof data.listeners === 'number' ? data.listeners : (data.listeners && (data.listeners.current ?? data.listeners.total)),
+    isLive: data.is_live ?? (typeof data.live === 'boolean' ? data.live : (data.live && data.live.is_live)) ?? false,
+    streamer: (data.live && typeof data.live === 'object' && data.live.streamer_name) || data.streamer_name || null,
+    hist
+  };
+}
+function npEmbed(np) {
+  const e = new EmbedBuilder()
+    .setColor(ACCENT)
+    .setAuthor({ name: `${np.isLive ? '🔴 LIVE' : '🎵 Now Playing'}  ·  ${np.station}` })
+    .setTitle(np.title)
+    .setTimestamp();
+  const lines = [];
+  if (np.artist) lines.push(`by **${np.artist}**`);
+  if (np.album) lines.push(`*${np.album}*`);
+  const bar = progressBar(np.elapsed, np.duration);
+  if (bar) lines.push('```' + bar + '```');
+  e.setDescription(lines.join('\n') || '​');
+  if (np.art) e.setThumbnail(np.art);
+  const meta = [];
+  if (np.isLive && np.streamer) meta.push(`🎙️ ${np.streamer}`);
+  if (np.listeners != null) meta.push(`👥 ${np.listeners} listening`);
+  if (meta.length) e.addFields({ name: '​', value: meta.join('       ') });
+  if (np.hist.length) {
+    e.addFields({ name: '⏮️  Recently played', value: np.hist.map((h) => `\`•\` **${h.title}**${h.artist ? ` — ${h.artist}` : ''}`).join('\n').slice(0, 1024) });
+  }
+  e.setFooter({ text: 'Live · updates automatically' });
+  return e;
+}
+function npRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('🎧 Listen Live').setStyle(ButtonStyle.Link).setURL(RADIO_LINK)
+  );
+}
+async function updateNowPlaying(guild) {
+  if (!NOWPLAYING_URL) return;
+  const channel = logChannel(guild, NOWPLAYING_CHANNEL);
+  if (!channel) return;
+  let data;
+  try {
+    const res = await fetch(NOWPLAYING_URL, { headers: { accept: 'application/json' } });
+    if (!res.ok) return;
+    data = await res.json();
+  } catch { return; }
+  const payload = { embeds: [npEmbed(parseNP(data))], components: [npRow()] };
+  let msg = npMessages.get(guild.id);
+  try {
+    if (!msg) {
+      // Reuse the bot's existing card if one's already there (e.g. after a restart).
+      const recent = await channel.messages.fetch({ limit: 10 }).catch(() => null);
+      const mine = recent && recent.find((m) => m.author.id === client.user.id && m.embeds.length);
+      msg = mine || await channel.send(payload);
+      npMessages.set(guild.id, msg);
+      if (mine) await msg.edit(payload);
+    } else {
+      await msg.edit(payload);
+    }
+  } catch {
+    npMessages.delete(guild.id); // message gone -> repost next cycle
+  }
+}
+function startNowPlaying() {
+  if (!NOWPLAYING_URL) { console.log('Now-playing card disabled (set TMCAST_NOWPLAYING_URL to enable).'); return; }
+  const tick = () => { for (const g of client.guilds.cache.values()) updateNowPlaying(g); };
+  tick();
+  setInterval(tick, 15000);
+  console.log(`Now-playing card active in #${NOWPLAYING_CHANNEL} (refreshing every 15s).`);
+}
 
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 process.on('uncaughtException', (e) => { console.error('uncaughtException:', e); process.exit(1); });
