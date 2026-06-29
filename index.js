@@ -17,7 +17,7 @@
 const {
   Client, GatewayIntentBits, Events, Partials, AuditLogEvent, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, ChannelType
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType, ChannelType, AttachmentBuilder
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
@@ -26,6 +26,68 @@ const {
 } = require('@discordjs/voice');
 const ffmpegPath = require('ffmpeg-static');
 const { spawn } = require('node:child_process');
+const path = require('node:path');
+
+// Welcome-card rendering (prebuilt canvas; falls back to an embed if unavailable).
+let Canvas = null;
+try {
+  Canvas = require('@napi-rs/canvas');
+  Canvas.GlobalFonts.registerFromPath(path.join(__dirname, 'fonts', 'Poppins-Bold.ttf'), 'Poppins Bold');
+  Canvas.GlobalFonts.registerFromPath(path.join(__dirname, 'fonts', 'Poppins-Regular.ttf'), 'Poppins');
+} catch (e) { console.warn('@napi-rs/canvas unavailable — welcome cards will use an embed.', e.message); }
+
+async function fetchImg(url) {
+  try { const r = await fetch(url); if (!r.ok) return null; return await Canvas.loadImage(Buffer.from(await r.arrayBuffer())); } catch { return null; }
+}
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function fitText(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+async function makeWelcomeCard(member) {
+  if (!Canvas) return null;
+  try {
+    const W = 800, H = 260;
+    const c = Canvas.createCanvas(W, H);
+    const ctx = c.getContext('2d');
+    roundRectPath(ctx, 0, 0, W, H, 26); ctx.clip();
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#7C4DFF'); g.addColorStop(1, '#3A1A9E');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const rg = ctx.createRadialGradient(W * 0.8, H * 0.5, 10, W * 0.8, H * 0.5, 280);
+    rg.addColorStop(0, 'rgba(255,255,255,0.16)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.font = '22px "Poppins Bold"'; ctx.fillText('WELCOME TO MAVION', 46, 58);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '44px "Poppins Bold"'; ctx.fillText(fitText(ctx, member.user.username, 430), 46, 112);
+    ctx.fillStyle = 'rgba(255,255,255,0.88)';
+    ctx.font = '24px "Poppins"'; ctx.fillText(`You're member #${member.guild.memberCount}`, 46, 152);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(46, 182); ctx.lineTo(486, 182); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.font = '18px "Poppins"';
+    ctx.fillText('We’d love to have you — apply in #careers', 46, 214);
+    ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.font = '16px "Poppins"';
+    ctx.fillText('tmc.gg', 46, 240);
+
+    const av = await fetchImg(member.user.displayAvatarURL({ extension: 'png', size: 256 }));
+    if (av) {
+      const cx = W - 150, cy = H / 2, rad = 82;
+      ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.closePath(); ctx.clip();
+      ctx.drawImage(av, cx - rad, cy - rad, rad * 2, rad * 2); ctx.restore();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 5;
+      ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.stroke();
+    }
+    return c.toBuffer('image/png');
+  } catch (e) { console.error('welcome card failed:', e.message); return null; }
+}
 
 // ---- config (from environment) ----
 const TOKEN = process.env.DISCORD_TOKEN;

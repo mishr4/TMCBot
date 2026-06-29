@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@discordjs/voice": "^0.18.0",
+    "@napi-rs/canvas": "^1.0.1",
     "@noble/ciphers": "^1.2.1",
     "discord.js": "^14.16.3",
     "ffmpeg-static": "^5.2.0",
