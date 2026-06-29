@@ -283,10 +283,10 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder()
     .setName('staff-dm')
-    .setDescription('DM everyone in a role an announcement')
-    .addRoleOption((o) => o.setName('role').setDescription('Role to DM').setRequired(true))
+    .setDescription('Post an announcement that pings a role (does not DM — that gets the bot quarantined)')
+    .addRoleOption((o) => o.setName('role').setDescription('Role to ping').setRequired(true))
     .addStringOption((o) => o.setName('message').setDescription('The announcement text').setRequired(true))
-    .addRoleOption((o) => o.setName('also_role').setDescription('Optional second role to include').setRequired(false))
+    .addRoleOption((o) => o.setName('also_role').setDescription('Optional second role to ping').setRequired(false))
     .addStringOption((o) => o.setName('title').setDescription('Optional title for the announcement').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .setDMPermission(false)
@@ -443,42 +443,25 @@ async function cmdRoblox(interaction) {
 }
 
 async function cmdStaffDm(interaction) {
-  const role = interaction.options.getRole('role');
-  const role2 = interaction.options.getRole('also_role');
+  // NOTE: this posts a channel announcement that PINGS the role(s). It no longer DMs
+  // every member — mass-DMing a role is what got the bot quarantined by Discord's anti-spam.
+  const roles = [interaction.options.getRole('role'), interaction.options.getRole('also_role')].filter(Boolean);
   const message = interaction.options.getString('message');
-  const title = interaction.options.getString('title') || `Announcement — ${interaction.guild.name}`;
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  // Make sure the member list is loaded so role membership is complete.
-  await interaction.guild.members.fetch();
-
-  const targets = new Map();
-  for (const r of [role, role2]) {
-    if (!r) continue;
-    const full = interaction.guild.roles.cache.get(r.id);
-    full?.members?.forEach((m) => { if (!m.user.bot) targets.set(m.id, m); });
-  }
-  if (targets.size === 0) return interaction.editReply('That role has no (non-bot) members to DM.');
+  const title = interaction.options.getString('title') || `📢 ${interaction.guild.name} Announcement`;
 
   const embed = new EmbedBuilder()
     .setColor(ACCENT)
     .setTitle(title)
     .setDescription(message)
-    .setFooter({ text: `Sent by ${interaction.user.tag} • ${interaction.guild.name}` })
+    .setFooter({ text: `Posted by ${interaction.user.tag}` })
     .setTimestamp();
-
-  let sent = 0, failed = 0;
-  for (const member of targets.values()) {
-    try { await member.send({ embeds: [embed] }); sent++; }
-    catch { failed++; }
-    await sleep(350); // gentle pace so Discord doesn't flag the burst
+  const pings = roles.map((r) => `<@&${r.id}>`).join(' ');
+  try {
+    await interaction.channel.send({ content: pings || undefined, embeds: [embed], allowedMentions: { roles: roles.map((r) => r.id) } });
+    return interaction.reply({ content: `📢 Announcement posted${pings ? ` and pinged ${pings}` : ''}.`, flags: MessageFlags.Ephemeral });
+  } catch (e) {
+    return interaction.reply({ content: `Couldn’t post: ${e.message}`, flags: MessageFlags.Ephemeral });
   }
-
-  const roleNames = [role, role2].filter(Boolean).map((r) => `@${r.name}`).join(', ');
-  let summary = `📣 Delivered to **${sent}** member(s) of **${roleNames}**.`;
-  if (failed) summary += ` **${failed}** couldn’t be reached (DMs closed or blocked).`;
-  return interaction.editReply(summary);
 }
 
 // ---- moderation + community commands ----
