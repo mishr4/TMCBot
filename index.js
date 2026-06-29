@@ -17,7 +17,7 @@
 const {
   Client, GatewayIntentBits, Events, Partials, AuditLogEvent, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType
 } = require('discord.js');
 const {
   joinVoiceChannel, createAudioPlayer, createAudioResource, StreamType,
@@ -149,6 +149,8 @@ const commands = [
   new SlashCommandBuilder().setName('play').setDescription(`Stream ${STATION_NAME} in your current voice channel`),
   new SlashCommandBuilder().setName('stop').setDescription('Stop the radio and leave the voice channel'),
   new SlashCommandBuilder().setName('nowplaying').setDescription('Show what is currently playing on the radio'),
+  new SlashCommandBuilder().setName('roblox').setDescription('Look up a Roblox profile')
+    .addStringOption((o) => o.setName('username').setDescription('Roblox username').setRequired(true)),
   new SlashCommandBuilder()
     .setName('staff-dm')
     .setDescription('DM everyone in a role an announcement')
@@ -240,6 +242,65 @@ async function cmdNowPlaying(interaction) {
   return interaction.editReply({ embeds: [embed] });
 }
 
+async function robloxProfile(username) {
+  const u = await fetch('https://users.roblox.com/v1/usernames/users', {
+    method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ usernames: [username], excludeBannedUsers: false })
+  });
+  const ud = await u.json();
+  const hit = ud.data && ud.data[0];
+  if (!hit) return null;
+  const id = hit.id;
+  const j = (url) => fetch(url, { headers: { accept: 'application/json' } }).then((r) => r.json()).catch(() => ({}));
+  const [info, friends, followers, following, av] = await Promise.all([
+    j(`https://users.roblox.com/v1/users/${id}`),
+    j(`https://friends.roblox.com/v1/users/${id}/friends/count`),
+    j(`https://friends.roblox.com/v1/users/${id}/followers/count`),
+    j(`https://friends.roblox.com/v1/users/${id}/followings/count`),
+    j(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${id}&size=420x420&format=Png&isCircular=false`)
+  ]);
+  return {
+    id,
+    name: info.name || hit.name,
+    displayName: info.displayName || hit.displayName || hit.name,
+    description: info.description || '',
+    created: info.created || null,
+    friends: friends.count ?? null,
+    followers: followers.count ?? null,
+    following: following.count ?? null,
+    avatar: (av.data && av.data[0] && av.data[0].imageUrl) || null
+  };
+}
+async function cmdRoblox(interaction) {
+  const username = interaction.options.getString('username');
+  await interaction.deferReply();
+  const p = await robloxProfile(username).catch(() => null);
+  if (!p) return interaction.editReply(`Couldn't find a Roblox user named **${username}**.`);
+  const created = p.created ? new Date(p.created) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86400000) : null;
+  const profileUrl = `https://www.roblox.com/users/${p.id}/profile`;
+  const e = new EmbedBuilder()
+    .setColor(ACCENT)
+    .setAuthor({ name: '🟦 Roblox Profile' })
+    .setTitle(`${p.displayName} (@${p.name})`)
+    .setURL(profileUrl)
+    .addFields(
+      { name: 'Friends', value: `${p.friends ?? '—'}`, inline: true },
+      { name: 'Following', value: `${p.following ?? '—'}`, inline: true },
+      { name: 'Followers', value: `${p.followers ?? '—'}`, inline: true },
+      { name: 'Joined', value: created ? `<t:${Math.floor(created.getTime() / 1000)}:D>` : '—', inline: true },
+      { name: 'Account age', value: ageDays != null ? `${ageDays} days` : '—', inline: true },
+      { name: 'ID', value: `${p.id}`, inline: true }
+    )
+    .setFooter({ text: 'Roblox · TMC' });
+  if (p.description) e.setDescription(cut(p.description, 400));
+  if (p.avatar) e.setThumbnail(p.avatar);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('View Profile').setStyle(ButtonStyle.Link).setURL(profileUrl)
+  );
+  return interaction.editReply({ embeds: [e], components: [row] });
+}
+
 async function cmdStaffDm(interaction) {
   const role = interaction.options.getRole('role');
   const role2 = interaction.options.getRole('also_role');
@@ -313,6 +374,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.commandName === 'play') return await cmdPlay(interaction);
     if (interaction.commandName === 'stop') return await cmdStop(interaction);
     if (interaction.commandName === 'nowplaying') return await cmdNowPlaying(interaction);
+    if (interaction.commandName === 'roblox') return await cmdRoblox(interaction);
     if (interaction.commandName === 'staff-dm') return await cmdStaffDm(interaction);
   } catch (e) {
     console.error(`/${interaction.commandName} error:`, e);
@@ -550,17 +612,10 @@ function npRow() {
     new ButtonBuilder().setLabel('🎧 Listen Live').setStyle(ButtonStyle.Link).setURL(RADIO_LINK)
   );
 }
-async function updateNowPlaying(guild) {
-  if (!NOWPLAYING_URL) return;
+async function updateNowPlaying(guild, np) {
   const channel = logChannel(guild, NOWPLAYING_CHANNEL);
   if (!channel) return;
-  let data;
-  try {
-    const res = await fetch(NOWPLAYING_URL, { headers: { accept: 'application/json' } });
-    if (!res.ok) return;
-    data = await res.json();
-  } catch { return; }
-  const payload = { embeds: [npEmbed(parseNP(data))], components: [npRow()] };
+  const payload = { embeds: [npEmbed(np)], components: [npRow()] };
   let msg = npMessages.get(guild.id);
   try {
     if (!msg) {
@@ -577,12 +632,33 @@ async function updateNowPlaying(guild) {
     npMessages.delete(guild.id); // message gone -> repost next cycle
   }
 }
+async function tickNowPlaying() {
+  if (!NOWPLAYING_URL) return;
+  let data;
+  try {
+    const res = await fetch(NOWPLAYING_URL, { headers: { accept: 'application/json' } });
+    if (!res.ok) return;
+    data = await res.json();
+  } catch { return; }
+  const np = parseNP(data);
+  // Live bot status = the current track.
+  try {
+    client.user.setPresence({
+      activities: [{ name: `${np.title}${np.artist ? ` — ${np.artist}` : ''}`, type: ActivityType.Listening }],
+      status: 'online'
+    });
+  } catch (e) {}
+  for (const g of client.guilds.cache.values()) updateNowPlaying(g, np);
+}
 function startNowPlaying() {
-  if (!NOWPLAYING_URL) { console.log('Now-playing card disabled (set TMCAST_NOWPLAYING_URL to enable).'); return; }
-  const tick = () => { for (const g of client.guilds.cache.values()) updateNowPlaying(g); };
-  tick();
-  setInterval(tick, 15000);
-  console.log(`Now-playing card active in #${NOWPLAYING_CHANNEL} (refreshing every 15s).`);
+  if (!NOWPLAYING_URL) {
+    try { client.user.setPresence({ activities: [{ name: 'the server 👀', type: ActivityType.Watching }], status: 'online' }); } catch (e) {}
+    console.log('Now-playing card disabled (set TMCAST_NOWPLAYING_URL to enable). Default status set.');
+    return;
+  }
+  tickNowPlaying();
+  setInterval(tickNowPlaying, 15000);
+  console.log('Now-playing card + live "Listening to…" status active (every 15s).');
 }
 
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
