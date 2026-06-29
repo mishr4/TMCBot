@@ -265,8 +265,8 @@ const commands = [
     .addStringOption((o) => o.setName('button_label').setDescription('Button label').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder().setName('selfroles-panel').setDescription('Post a self-roles button panel in this channel')
-    .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
     .addRoleOption((o) => o.setName('role').setDescription('Role 1').setRequired(true))
+    .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
     .addRoleOption((o) => o.setName('role2').setDescription('Role 2').setRequired(false))
     .addRoleOption((o) => o.setName('role3').setDescription('Role 3').setRequired(false))
     .addRoleOption((o) => o.setName('role4').setDescription('Role 4').setRequired(false))
@@ -283,16 +283,27 @@ const commands = [
     .setDMPermission(false)
 ].map((c) => c.toJSON());
 
+// Discord requires required options before optional ones. Auto-reorder so a mistake
+// can never reject the whole batch (which would leave commands un-updated).
+function reorderRequired(cmd) {
+  if (Array.isArray(cmd.options) && cmd.options.length) {
+    const hasSub = cmd.options.some((o) => o.type === 1 || o.type === 2);
+    if (hasSub) cmd.options.forEach((sub) => { if (Array.isArray(sub.options)) sub.options.sort((a, b) => (b.required === true) - (a.required === true)); });
+    else cmd.options.sort((a, b) => (b.required === true) - (a.required === true));
+  }
+  return cmd;
+}
 async function registerCommands(clientId) {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
+  const body = commands.map(reorderRequired);
   if (GUILD_ID) {
-    await rest.put(Routes.applicationGuildCommands(clientId, GUILD_ID), { body: commands });
+    await rest.put(Routes.applicationGuildCommands(clientId, GUILD_ID), { body });
     // Wipe any leftover GLOBAL commands (e.g. stale ones from a previous bot that reused this app).
     try { await rest.put(Routes.applicationCommands(clientId), { body: [] }); } catch (e) {}
     console.log('Registered guild commands + cleared any stale global commands.');
   } else {
     // Global registration already REPLACES the full set, so old commands are wiped here too.
-    await rest.put(Routes.applicationCommands(clientId), { body: commands });
+    await rest.put(Routes.applicationCommands(clientId), { body });
     console.log('Registered global commands (can take up to ~1 hour to appear).');
   }
 }
