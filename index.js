@@ -1,19 +1,21 @@
 'use strict';
 
 /*
- * TMC radio bot
- * - /play        join your voice channel and stream the AzuraCast radio
- * - /stop        leave the voice channel
- * - /nowplaying  show the current song from AzuraCast
- * - /staff-dm    DM everyone in a role (or two) an announcement  [Manage Server only]
+ * TMC bot — admin + logging (with optional radio).
+ * Commands: /play /stop /nowplaying /staff-dm
+ * Logging: auto-routes events to channels BY NAME (no channel IDs to set up):
+ *   msg-logs  · deletes, edits, purges
+ *   mod-logs  · bans, unbans, kicks, timeouts
+ *   role-logs · role add/remove, role create/delete
+ *   user-logs · joins, leaves, nickname changes
+ *   vc-logs   · voice join/leave/move
  *
- * Audio is bundled end to end: ffmpeg-static supplies ffmpeg, ffmpeg encodes the
- * stream straight to Ogg/Opus, and libsodium-wrappers handles voice encryption.
- * No system ffmpeg, no native opus build, no compiler required.
+ * Audio is bundled: ffmpeg-static + ffmpeg→Ogg/Opus + @noble/ciphers encryption —
+ * no system ffmpeg, no native build.
  */
 
 const {
-  Client, GatewayIntentBits, Events, REST, Routes,
+  Client, GatewayIntentBits, Events, Partials, AuditLogEvent, REST, Routes,
   SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, MessageFlags
 } = require('discord.js');
 const {
@@ -275,8 +277,12 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers // privileged — enable "Server Members Intent" in the Dev Portal
-  ]
+    GatewayIntentBits.GuildMembers,    // privileged — "Server Members Intent"
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,  // privileged — "Message Content Intent"
+    GatewayIntentBits.GuildModeration  // ban / unban events
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.User]
 });
 
 client.once(Events.ClientReady, async (c) => {
@@ -306,6 +312,145 @@ client.on(Events.InteractionCreate, async (interaction) => {
     else interaction.reply(payload).catch(() => {});
   }
 });
+
+// ---- server logging ----
+// Routes each event to the right channel BY NAME — no channel IDs to configure.
+const LOG = { msg: 'msg-logs', mod: 'mod-logs', role: 'role-logs', user: 'user-logs', vc: 'vc-logs' };
+
+function logChannel(guild, name) {
+  if (!guild) return null;
+  return guild.channels.cache.find((c) => c.name === name && c.isTextBased()) || null;
+}
+async function sendLog(guild, name, embed) {
+  const ch = logChannel(guild, name);
+  if (!ch) return; // channel doesn't exist -> silently skip
+  try { await ch.send({ embeds: [embed] }); } catch (e) {}
+}
+function logEmbed(color, title, user) {
+  const e = new EmbedBuilder().setColor(color).setTitle(title).setTimestamp();
+  if (user) e.setAuthor({ name: user.tag || user.username || 'Unknown', iconURL: user.displayAvatarURL && user.displayAvatarURL() });
+  return e;
+}
+const cut = (s, n = 1024) => (s && s.length > n ? s.slice(0, n - 1) + '…' : (s || ''));
+async function findExecutor(guild, type, targetId) {
+  try {
+    const logs = await guild.fetchAuditLogs({ type, limit: 5 });
+    return logs.entries.find((e) => e.target?.id === targetId && Date.now() - e.createdTimestamp < 8000) || null;
+  } catch { return null; }
+}
+
+// messages -> msg-logs
+client.on(Events.MessageDelete, (msg) => {
+  if (!msg.guild || msg.author?.bot) return;
+  sendLog(msg.guild, LOG.msg, logEmbed(0xe5484d, '🗑️ Message deleted', msg.author)
+    .setDescription(cut(msg.content) || '*(content not cached)*')
+    .addFields({ name: 'Channel', value: `<#${msg.channelId}>`, inline: true }));
+});
+client.on(Events.MessageUpdate, (oldMsg, newMsg) => {
+  if (!newMsg.guild || newMsg.author?.bot) return;
+  if ((oldMsg.content || '') === (newMsg.content || '')) return;
+  const e = logEmbed(0xf5a623, '✏️ Message edited', newMsg.author).addFields(
+    { name: 'Before', value: cut(oldMsg.content) || '*(not cached)*' },
+    { name: 'After', value: cut(newMsg.content) || '*(empty)*' },
+    { name: 'Channel', value: `<#${newMsg.channelId}>`, inline: true }
+  );
+  if (newMsg.url) e.setURL(newMsg.url);
+  sendLog(newMsg.guild, LOG.msg, e);
+});
+client.on(Events.MessageBulkDelete, (messages) => {
+  const first = messages.first();
+  if (!first?.guild) return;
+  sendLog(first.guild, LOG.msg, logEmbed(0xe5484d, '🧹 Messages purged')
+    .setDescription(`**${messages.size}** messages deleted in <#${first.channelId}>`));
+});
+
+// joins / leaves / kicks -> user-logs (kick -> mod-logs)
+client.on(Events.GuildMemberAdd, (m) => {
+  sendLog(m.guild, LOG.user, logEmbed(0x0a9d6c, '📥 Member joined', m.user)
+    .setDescription(`<@${m.id}>`)
+    .addFields(
+      { name: 'Account created', value: `<t:${Math.floor(m.user.createdTimestamp / 1000)}:R>`, inline: true },
+      { name: 'Member #', value: `${m.guild.memberCount}`, inline: true }
+    ));
+});
+client.on(Events.GuildMemberRemove, async (m) => {
+  const kick = await findExecutor(m.guild, AuditLogEvent.MemberKick, m.id);
+  if (kick) {
+    sendLog(m.guild, LOG.mod, logEmbed(0xe5484d, '👢 Member kicked', m.user)
+      .setDescription(`<@${m.id}>`)
+      .addFields(
+        { name: 'Moderator', value: kick.executor?.tag || 'Unknown', inline: true },
+        { name: 'Reason', value: kick.reason || 'No reason given', inline: true }
+      ));
+  } else {
+    const roles = m.roles?.cache?.filter((r) => r.id !== m.guild.id).map((r) => `<@&${r.id}>`).join(' ');
+    sendLog(m.guild, LOG.user, logEmbed(0x99662b, '📤 Member left', m.user)
+      .setDescription(`<@${m.id}>`)
+      .addFields({ name: 'Roles', value: cut(roles) || '—' }));
+  }
+});
+
+// bans -> mod-logs
+client.on(Events.GuildBanAdd, async (ban) => {
+  const entry = await findExecutor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id);
+  sendLog(ban.guild, LOG.mod, logEmbed(0x8b0000, '🔨 Member banned', ban.user)
+    .setDescription(`<@${ban.user.id}>`)
+    .addFields(
+      { name: 'Moderator', value: entry?.executor?.tag || 'Unknown', inline: true },
+      { name: 'Reason', value: entry?.reason || ban.reason || 'No reason given', inline: true }
+    ));
+});
+client.on(Events.GuildBanRemove, async (ban) => {
+  const entry = await findExecutor(ban.guild, AuditLogEvent.MemberBanRemove, ban.user.id);
+  sendLog(ban.guild, LOG.mod, logEmbed(0x0a9d6c, '♻️ Member unbanned', ban.user)
+    .setDescription(`<@${ban.user.id}>`)
+    .addFields({ name: 'Moderator', value: entry?.executor?.tag || 'Unknown', inline: true }));
+});
+
+// roles, nickname, timeout -> role-logs / user-logs / mod-logs
+client.on(Events.GuildMemberUpdate, (oldM, newM) => {
+  const before = oldM.roles.cache, after = newM.roles.cache;
+  const added = after.filter((r) => !before.has(r.id));
+  const removed = before.filter((r) => !after.has(r.id));
+  if (added.size || removed.size) {
+    const e = logEmbed(0x5865f2, '🎭 Roles updated', newM.user).setDescription(`<@${newM.id}>`);
+    if (added.size) e.addFields({ name: 'Added', value: cut(added.map((r) => `<@&${r.id}>`).join(' ')) });
+    if (removed.size) e.addFields({ name: 'Removed', value: cut(removed.map((r) => `<@&${r.id}>`).join(' ')) });
+    sendLog(newM.guild, LOG.role, e);
+  }
+  if ((oldM.nickname || '') !== (newM.nickname || '')) {
+    sendLog(newM.guild, LOG.user, logEmbed(0x5865f2, '🏷️ Nickname changed', newM.user).addFields(
+      { name: 'Before', value: oldM.nickname || '*(none)*', inline: true },
+      { name: 'After', value: newM.nickname || '*(none)*', inline: true }
+    ));
+  }
+  const oldTo = oldM.communicationDisabledUntilTimestamp || 0;
+  const newTo = newM.communicationDisabledUntilTimestamp || 0;
+  if (oldTo !== newTo) {
+    if (newTo > Date.now()) {
+      sendLog(newM.guild, LOG.mod, logEmbed(0xb06d00, '⏳ Member timed out', newM.user)
+        .setDescription(`<@${newM.id}> until <t:${Math.floor(newTo / 1000)}:f>`));
+    } else {
+      sendLog(newM.guild, LOG.mod, logEmbed(0x0a9d6c, '⏳ Timeout removed', newM.user).setDescription(`<@${newM.id}>`));
+    }
+  }
+});
+
+// voice activity -> vc-logs
+client.on(Events.VoiceStateUpdate, (oldS, newS) => {
+  const member = newS.member || oldS.member;
+  if (!member || member.user.bot) return;
+  let e;
+  if (!oldS.channelId && newS.channelId) e = logEmbed(0x0a9d6c, '🔊 Joined voice', member.user).setDescription(`<@${member.id}> → <#${newS.channelId}>`);
+  else if (oldS.channelId && !newS.channelId) e = logEmbed(0xe5484d, '🔇 Left voice', member.user).setDescription(`<@${member.id}> left <#${oldS.channelId}>`);
+  else if (oldS.channelId !== newS.channelId) e = logEmbed(0x5865f2, '🔀 Moved voice', member.user).setDescription(`<@${member.id}>: <#${oldS.channelId}> → <#${newS.channelId}>`);
+  else return;
+  sendLog(newS.guild, LOG.vc, e);
+});
+
+// role create / delete -> role-logs
+client.on(Events.GuildRoleCreate, (role) => sendLog(role.guild, LOG.role, logEmbed(0x0a9d6c, '➕ Role created').setDescription(`<@&${role.id}> · \`${role.name}\``)));
+client.on(Events.GuildRoleDelete, (role) => sendLog(role.guild, LOG.role, logEmbed(0xe5484d, '➖ Role deleted').setDescription(`\`${role.name}\``)));
 
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 process.on('uncaughtException', (e) => { console.error('uncaughtException:', e); process.exit(1); });
