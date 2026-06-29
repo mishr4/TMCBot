@@ -4,12 +4,15 @@
 # First run creates .env for you to fill in; run it again to start the service.
 set -e
 
-echo "==> Installing Node.js 20 + git (if needed)..."
+echo "==> Installing prerequisites (curl, git, ca-certificates)..."
+sudo apt-get update -y
+sudo apt-get install -y curl git ca-certificates
+
+echo "==> Installing Node.js 20 (if needed)..."
 if ! command -v node >/dev/null 2>&1; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
   sudo apt-get install -y nodejs
 fi
-sudo apt-get install -y git >/dev/null
 
 echo "==> Installing dependencies..."
 npm install --omit=dev
