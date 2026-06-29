@@ -161,8 +161,11 @@ async function registerCommands(clientId) {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(clientId, GUILD_ID), { body: commands });
-    console.log('Registered guild commands (available immediately).');
+    // Wipe any leftover GLOBAL commands (e.g. stale ones from a previous bot that reused this app).
+    try { await rest.put(Routes.applicationCommands(clientId), { body: [] }); } catch (e) {}
+    console.log('Registered guild commands + cleared any stale global commands.');
   } else {
+    // Global registration already REPLACES the full set, so old commands are wiped here too.
     await rest.put(Routes.applicationCommands(clientId), { body: commands });
     console.log('Registered global commands (can take up to ~1 hour to appear).');
   }
