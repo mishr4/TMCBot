@@ -508,6 +508,23 @@ async function dmPunish(user, title, bodyLine, reason, color, appeal) {
     return true;
   } catch (e) { console.error(`DM to ${user && user.id} failed:`, e.message); return false; }
 }
+// Ban + DM a "click to unban" button (a banned real user can still click it in DMs;
+// an automated/stolen-account script won't). DM is sent before the ban so it lands.
+async function banWithUnbanButton(guild, user, reason) {
+  let dmed = false;
+  try {
+    const e = new EmbedBuilder().setColor(0x8b0000).setTitle('🔨 You were banned')
+      .setDescription(`You were auto-banned from **${guild.name}** for suspected spam.\n\nIf you're a **real person**, click the button below and you'll be unbanned right away.`)
+      .addFields({ name: 'Reason', value: reason || 'Suspected spam' });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`unban:${guild.id}`).setLabel("I'm human — unban me").setEmoji('✅').setStyle(ButtonStyle.Success)
+    );
+    await user.send({ embeds: [e], components: [row] });
+    dmed = true;
+  } catch (e) { console.error(`unban-DM to ${user && user.id} failed:`, e.message); }
+  try { await guild.bans.create(user.id, { reason: reason || 'Automod: suspected spam' }); } catch (e) { console.error('auto-ban failed:', e.message); }
+  return dmed;
+}
 
 async function cmdBan(interaction) {
   const user = interaction.options.getUser('user');
@@ -679,6 +696,16 @@ async function handleButton(interaction) {
     if (member.roles.cache.has(roleId)) return interaction.reply({ content: 'You’re already verified ✅', flags: MessageFlags.Ephemeral });
     try { await member.roles.add(roleId); return interaction.reply({ content: 'Verified — welcome in! ✅', flags: MessageFlags.Ephemeral }); }
     catch (e) { return interaction.reply({ content: 'Couldn’t verify you — a staff member needs to move my role above the verified role.', flags: MessageFlags.Ephemeral }); }
+  }
+  if (id.startsWith('unban:')) {
+    // a banned (real) user clicked "I'm human" in their DM — unban them from that guild
+    const guildId = id.slice('unban:'.length);
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return interaction.reply({ content: 'That server isn’t available anymore.', flags: MessageFlags.Ephemeral });
+    try {
+      await guild.bans.remove(interaction.user.id, 'Self-unban via human verification');
+      return interaction.reply({ content: `✅ You’ve been unbanned from **${guild.name}**. You can rejoin now — please don’t spam.`, flags: MessageFlags.Ephemeral });
+    } catch (e) { return interaction.reply({ content: 'Couldn’t unban you (you may not be banned, or staff removed the option). Contact a staff member.', flags: MessageFlags.Ephemeral }); }
   }
 }
 
@@ -980,8 +1007,8 @@ client.on(Events.MessageCreate, async (msg) => {
     if (arr.length >= 4) {
       imgSpam.delete(msg.author.id);
       for (const e of arr) e.msg.delete().catch(() => {});
-      try { await msg.member.timeout(60 * 60 * 1000, 'Automod: image spam from a new account'); } catch (e) {}
-      automodLog(msg, '4+ images from a <14-day-old account — deleted + 1h timeout', 0xb06d00);
+      const dmed = await banWithUnbanButton(msg.guild, msg.author, 'Suspected spam (rapid images from a new account)');
+      automodLog(msg, `Suspected spam raid — banned${dmed ? " + DM'd an unban button" : " (couldn't DM)"}`, 0x8b0000);
     }
   }
 });
