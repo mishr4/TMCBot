@@ -1,4 +1,4 @@
-# TMC Radio Bot
+# TMC Radio Bot yay
 
 A Discord bot that streams your AzuraCast station into a voice channel, plus staff tools.
 
