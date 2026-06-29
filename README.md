@@ -25,12 +25,10 @@ The stream is also set to auto-reconnect, and the bot restarts the audio automat
 ## 1. Create the bot
 1. https://discord.com/developers/applications → **New Application**.
 2. **Bot** tab → **Reset Token** → copy it (this is `DISCORD_TOKEN`).
-3. Still on the **Bot** tab → enable **Server Members Intent** (required for `/staff-dm`). Leave the others off.
-4. **OAuth2 → URL Generator**: scopes `bot` + `applications.commands`; permissions **View Channels, Send Messages, Embed Links, Connect, Speak**. Open the generated URL to invite it.
-
-   Or use this directly (replace `CLIENT_ID`):
+3. Still on the **Bot** tab → **Privileged Gateway Intents** → turn ON **both** **Server Members Intent** and **Message Content Intent** (the logging won't start without Message Content). *This is the one step only you can do — Discord requires it by hand.*
+4. **Invite it with one click** (replace `CLIENT_ID` with your application ID). `permissions=8` is Administrator, which covers logging, audit-log reads, and the moderation commands:
    ```
-   https://discord.com/oauth2/authorize?client_id=CLIENT_ID&permissions=3165184&scope=bot%20applications.commands
+   https://discord.com/oauth2/authorize?client_id=CLIENT_ID&permissions=8&scope=bot%20applications.commands
    ```
 
 ## 2. Deploy

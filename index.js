@@ -456,4 +456,18 @@ client.on(Events.GuildRoleDelete, (role) => sendLog(role.guild, LOG.role, logEmb
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 process.on('uncaughtException', (e) => { console.error('uncaughtException:', e); process.exit(1); });
 
-client.login(TOKEN);
+client.login(TOKEN).catch((err) => {
+  const msg = String(err && (err.code || err.message));
+  if (/DisallowedIntents|disallowed intents/i.test(msg)) {
+    console.error('\n⚠️  Login blocked: a PRIVILEGED INTENT is turned off.\n' +
+      '    Turn ON both "Server Members Intent" and "Message Content Intent" here:\n' +
+      '    https://discord.com/developers/applications  →  your app  →  Bot  →  Privileged Gateway Intents\n' +
+      '    Save, then restart the bot.\n');
+  } else if (/TokenInvalid/i.test(msg)) {
+    console.error('\n⚠️  DISCORD_TOKEN is wrong or missing. Copy it again from\n' +
+      '    Dev Portal → Bot → Reset Token (no quotes, no spaces).\n');
+  } else {
+    console.error('Login failed:', err);
+  }
+  process.exit(1);
+});
