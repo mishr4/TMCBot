@@ -272,11 +272,6 @@ const commands = [
     .addRoleOption((o) => o.setName('role4').setDescription('Role 4').setRequired(false))
     .addRoleOption((o) => o.setName('role5').setDescription('Role 5').setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
-  new SlashCommandBuilder().setName('verify-panel').setDescription('Post a verify button that grants a role (anti-bot gate)')
-    .addRoleOption((o) => o.setName('role').setDescription('Role to grant when they verify').setRequired(true))
-    .addStringOption((o) => o.setName('title').setDescription('Panel title').setRequired(false))
-    .addStringOption((o) => o.setName('description').setDescription('Panel text').setRequired(false))
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder().setName('testcard').setDescription('Preview the welcome card (test rendering)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild).setDMPermission(false),
   new SlashCommandBuilder().setName('dmtest').setDescription('Test whether the bot can DM you (shows the exact error)')
@@ -637,16 +632,6 @@ async function cmdSelfroles(interaction) {
   return interaction.reply({ content: 'Self-roles panel posted.', flags: MessageFlags.Ephemeral });
 }
 
-async function cmdVerifyPanel(interaction) {
-  const role = interaction.options.getRole('role');
-  const title = interaction.options.getString('title') || '✅ Verify yourself';
-  const desc = interaction.options.getString('description') || 'Click the button below to verify you’re human and unlock the rest of the server. Bots can’t click it.';
-  const e = new EmbedBuilder().setColor(ACCENT).setTitle(title).setDescription(desc).setFooter({ text: 'TMC' });
-  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`verify_${role.id}`).setLabel('Verify').setEmoji('✅').setStyle(ButtonStyle.Success));
-  await interaction.channel.send({ embeds: [e], components: [row] });
-  return interaction.reply({ content: `Verification panel posted — clicking it grants <@&${role.id}>.`, flags: MessageFlags.Ephemeral });
-}
-
 async function cmdTestcard(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (!Canvas) return interaction.editReply('Canvas isn’t available here — welcome would use the embed fallback.');
@@ -694,13 +679,6 @@ async function handleButton(interaction) {
       if (has) await member.roles.remove(roleId); else await member.roles.add(roleId);
       return interaction.reply({ content: has ? `Removed <@&${roleId}>` : `Added <@&${roleId}>`, flags: MessageFlags.Ephemeral });
     } catch (e) { return interaction.reply({ content: 'Couldn’t change that role — make sure my role is above it.', flags: MessageFlags.Ephemeral }); }
-  }
-  if (id.startsWith('verify_')) {
-    const roleId = id.slice('verify_'.length);
-    const member = interaction.member;
-    if (member.roles.cache.has(roleId)) return interaction.reply({ content: 'You’re already verified ✅', flags: MessageFlags.Ephemeral });
-    try { await member.roles.add(roleId); return interaction.reply({ content: 'Verified — welcome in! ✅', flags: MessageFlags.Ephemeral }); }
-    catch (e) { return interaction.reply({ content: 'Couldn’t verify you — a staff member needs to move my role above the verified role.', flags: MessageFlags.Ephemeral }); }
   }
   if (id.startsWith('unban:')) {
     // a banned (real) user clicked "I'm human" in their DM — unban them from that guild
@@ -775,7 +753,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (n === 'partner') return await cmdPartner(interaction);
     if (n === 'ticket-panel') return await cmdTicketPanel(interaction);
     if (n === 'selfroles-panel') return await cmdSelfroles(interaction);
-    if (n === 'verify-panel') return await cmdVerifyPanel(interaction);
     if (n === 'testcard') return await cmdTestcard(interaction);
     if (n === 'dmtest') return await cmdDmtest(interaction);
   } catch (e) {
