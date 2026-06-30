@@ -103,6 +103,8 @@ const RADIO_LINK = process.env.RADIO_LINK || 'https://mavion.tmc.gg/radio'; // "
 const APPEAL_URL = process.env.APPEAL_URL || 'https://tmc.gg/appeal'; // shown to banned/kicked users
 // Roles allowed to use the moderation commands (plus anyone with Administrator). Comma-separated.
 const MOD_ROLE_IDS = (process.env.MOD_ROLE_IDS || '1447075918089687090').split(',').map((s) => s.trim()).filter(Boolean);
+// Role auto-given to everyone who joins.
+const AUTOROLE_ID = process.env.AUTOROLE_ID || '1439131741771010119';
 const MOD_CMDS = new Set(['ban', 'kick', 'timeout', 'untimeout', 'warn', 'purge', 'slowmode']);
 function isMod(member) {
   if (!member) return false;
@@ -831,6 +833,8 @@ client.on(Events.MessageBulkDelete, (messages) => {
 
 // joins / leaves / kicks
 client.on(Events.GuildMemberAdd, (m) => {
+  // auto-role on join
+  if (AUTOROLE_ID) m.roles.add(AUTOROLE_ID, 'Auto-role on join').catch((e) => console.error('autorole failed:', e.message));
   sendLog(m.guild, LOG.user, logEmbed(0x0a9d6c, '📥 Member Joined', m.user)
     .setDescription(`<@${m.id}> joined — member **#${m.guild.memberCount}**.`)
     .addFields({ name: 'Account Created', value: `${full(m.user.createdTimestamp)} (${rel(m.user.createdTimestamp)})` }));
